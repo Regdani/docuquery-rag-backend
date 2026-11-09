@@ -1,5 +1,6 @@
 """Request and response models for the Q&A API."""
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
@@ -140,4 +141,33 @@ class ErrorResponse(BaseModel):
     )
     errors: list[ValidationIssue] | None = Field(
         default=None, description="Validation problems (422 only)."
+    )
+
+
+class HealthResponse(BaseModel):
+    """Liveness body."""
+
+    status: Literal["ok"] = Field(description="Always `ok` while the process is serving.")
+
+
+class LLMCheck(BaseModel):
+    """Result of the optional chat-model reachability check."""
+
+    status: Literal["ok", "unreachable", "timeout"] = Field(
+        description="`ok`, `unreachable` (the call failed) or `timeout` (no answer in time)."
+    )
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness body: the startup indexing state, plus the optional LLM check."""
+
+    state: Literal["indexing", "ready", "failed"] = Field(description="Startup indexing state.")
+    document_count: int = Field(description="Documents indexed.")
+    chunk_count: int = Field(description="Chunks in the index.")
+    embedding_model: str = Field(description="Embedding model used for the index.")
+    last_indexed_at: datetime = Field(description="Time of the last indexing status change (UTC).")
+    error: str | None = Field(default=None, description="Indexing error; null unless failed.")
+    llm: LLMCheck | None = Field(
+        default=None,
+        description="Present only with `check_llm=true`; informational, never changes the status.",
     )

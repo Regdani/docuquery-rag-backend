@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # Timeouts, retries and limits
     llm_timeout_seconds: float = 60.0
     embedding_timeout_seconds: float = 30.0
+    health_llm_timeout_seconds: float = Field(
+        default=5.0, gt=0, description="Timeout of the optional LLM check in /health/ready."
+    )
     max_retries: int = 2
     retry_backoff_seconds: float = 0.5
     max_question_length: int = Field(default=1000, ge=1)

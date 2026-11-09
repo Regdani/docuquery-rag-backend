@@ -209,7 +209,55 @@ Example response:
 }
 ```
 
-Which of this was run: the sample requests were sent to a running `uvicorn` with Ollama stopped, and the server answered `503` `INDEX_NOT_READY` with the `X-Request-ID` echoed. The success, follow-up, product-scoped, `404`, `422` and error paths were run through the automated API tests with fake providers, not against a real model; the example response above is illustrative and was not produced by a real model.
+More sample requests:
+
+```bash
+# Unclear question: 200 with status "clarification_needed" and a clarifying question
+curl -s -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application/json"   -d '{"question": "How do I clean it?"}'
+
+# Empty question: 422 with the unified error body (shown above)
+curl -s -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application/json"   -d '{"question": ""}'
+```
+
+Health requests are in the next section.
+
+**Which sample requests were actually run:** these were sent with `curl` to a running `uvicorn` on a machine without Ollama and without cloud keys, so the indexing state was `failed`: `GET /health` (`200`), `GET /health/ready` and `GET /health/ready?check_llm=true` (`503`, state `failed`, `llm.status` `unreachable`), the empty question (`422`, body as shown above) and a valid question (`503 INDEX_NOT_READY`, `X-Request-ID` present). The success, follow-up, product-scoped and clarification responses, the `ready` health responses and the `timeout` LLM check were verified only through the automated API tests with fake providers; their example bodies are illustrative and were not produced by a real model.
+
+## Health endpoints
+
+Both endpoints are at the root, outside `/api/v1`, are listed in Swagger UI with an example for every state, and are not affected by the index guard of the ask endpoint. Every response carries `X-Request-ID`.
+
+**`GET /health`** (liveness) returns `200` with `{"status": "ok"}` whenever the process is serving, whatever the indexing state. It touches neither the index nor any provider.
+
+```bash
+curl -s http://localhost:8000/health
+```
+
+**`GET /health/ready`** (readiness) reports the startup indexing state:
+
+| Field | Meaning |
+|---|---|
+| `state` | `indexing`, `ready` or `failed` |
+| `document_count`, `chunk_count` | Size of the index |
+| `embedding_model` | Embedding model the index was built with |
+| `last_indexed_at` | UTC time (ISO 8601) of the last indexing status change |
+| `error` | Reason when `failed`, otherwise `null` |
+| `llm` | Only with `check_llm=true` (see below) |
+
+| Condition | Status code |
+|---|---|
+| `state` is `ready` and `chunk_count >= 1` | `200` |
+| `indexing`, `failed`, or `ready` with zero chunks | `503`, with the same body so clients can read the state |
+
+```bash
+curl -s -i http://localhost:8000/health/ready
+```
+
+**Optional LLM check:** `GET /health/ready?check_llm=true` also sends one minimal request to the configured chat model and reports `"llm": {"status": "ok" | "unreachable" | "timeout"}`. It is off by default because it costs latency and, on cloud providers, a few tokens. It is informational: it never changes the status code or `state`, and a failure is logged at WARNING without exposing exception details. The call is bounded by `HEALTH_LLM_TIMEOUT_SECONDS` (default 5).
+
+```bash
+curl -s -i "http://localhost:8000/health/ready?check_llm=true"
+```
 
 ## Model providers
 

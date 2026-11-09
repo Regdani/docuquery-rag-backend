@@ -2,6 +2,7 @@
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
+from langchain_core.language_models import BaseChatModel
 
 from app.core.errors import IndexNotReadyError
 from app.memory.store import InMemorySessionStore
@@ -50,3 +51,9 @@ def get_qa_service(request: Request) -> QAServiceProtocol:
     """Return the QAService created at startup (override in tests)."""
     service: QAServiceProtocol = request.app.state.qa_service
     return service
+
+
+def get_chat_model(request: Request) -> BaseChatModel:
+    """Return the chat model created at startup (override in tests)."""
+    model: BaseChatModel = request.app.state.chat_model
+    return model

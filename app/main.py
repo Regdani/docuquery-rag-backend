@@ -12,6 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
 from app.api.handlers import register_exception_handlers
+from app.api.health import router as health_router
 from app.api.routes import router
 from app.core.config import Settings, get_settings
 from app.memory.store import get_session_store
@@ -90,6 +91,7 @@ def create_app(
     app.state.index_status = IndexStatus(state="indexing")
     register_exception_handlers(app)
     app.include_router(router)
+    app.include_router(health_router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, str]:
