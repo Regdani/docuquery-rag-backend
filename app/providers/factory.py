@@ -14,7 +14,13 @@ from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.core.errors import ProviderConfigError
-from app.providers.resilience import ResilientChatModel, ResilientEmbeddings, RetryPolicy, unwrap
+from app.providers.resilience import (
+    ResilientChatModel,
+    ResilientEmbeddings,
+    RetryPolicy,
+    ollama_translator,
+    unwrap,
+)
 
 SUPPORTED_PROVIDERS = ("azure", "gemini", "ollama")
 
@@ -138,7 +144,7 @@ def _create_ollama_embeddings(settings: Settings) -> Embeddings:
     )
 
 
-# Cloud providers get error translation and bounded 429 retry; ollama is used as is.
+# Cloud providers get error translation and bounded 429 retry; ollama gets translation only.
 _CLOUD = frozenset({"azure", "gemini"})
 _CHAT: dict[str, Callable[[Settings], BaseChatModel]] = {
     "azure": _create_azure_chat,
@@ -165,6 +171,13 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
             rate_limit_retries=settings.max_retries,
             backoff_seconds=settings.retry_backoff_seconds,
         )
+    if settings.llm_provider == "ollama":
+        # No rate limits locally: translation only, no retries.
+        return ResilientChatModel(
+            inner=model,
+            provider="ollama",
+            translator=ollama_translator(settings.ollama_base_url, settings.ollama_chat_model),
+        )
     return model
 
 
@@ -178,6 +191,9 @@ def create_embeddings(settings: Settings) -> Embeddings:
     if provider in _CLOUD:
         policy = RetryPolicy(provider, settings.max_retries, settings.retry_backoff_seconds)
         return ResilientEmbeddings(embeddings, policy)
+    if provider == "ollama":
+        translator = ollama_translator(settings.ollama_base_url, settings.ollama_embedding_model)
+        return ResilientEmbeddings(embeddings, RetryPolicy("ollama", 0, 0.0, translator))
     return embeddings
 
 

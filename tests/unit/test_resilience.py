@@ -149,7 +149,7 @@ def test_backoff_is_exponential_from_settings(monkeypatch: pytest.MonkeyPatch) -
     assert sleeps == [0.5, 1.0, 2.0]
 
 
-def test_factory_wires_retry_settings_for_cloud_only() -> None:
+def test_factory_wires_retry_settings_for_cloud_and_local() -> None:
     s = Settings(
         _env_file=None,  # type: ignore[call-arg]
         llm_provider="gemini",
@@ -165,7 +165,9 @@ def test_factory_wires_retry_settings_for_cloud_only() -> None:
     policy = emb._policy
     assert (policy.max_retries, policy.backoff_seconds) == (4, 0.25)
     local = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert not isinstance(create_chat_model(local), ResilientChatModel)
+    local_chat = create_chat_model(local)  # ollama: translation only, never a 429 retry
+    assert isinstance(local_chat, ResilientChatModel)
+    assert local_chat.rate_limit_retries == 0
 
 
 def test_secret_not_in_logs_or_errors(caplog: pytest.LogCaptureFixture) -> None:

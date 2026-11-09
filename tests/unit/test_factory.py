@@ -118,9 +118,9 @@ def test_timeouts_and_retries_applied() -> None:
     assert ge.client_args == {"timeout": 6.0}  # type: ignore[attr-defined]
     assert ge.client._api_client._httpx_client.timeout.read == 6.0  # type: ignore[attr-defined]
 
-    o = create_chat_model(make(llm_timeout_seconds=9.0))
+    o = unwrap(create_chat_model(make(llm_timeout_seconds=9.0)))
     assert o.client_kwargs == {"timeout": 9.0}  # type: ignore[attr-defined]
-    e = create_embeddings(make(embedding_timeout_seconds=3.0))
+    e = unwrap(create_embeddings(make(embedding_timeout_seconds=3.0)))
     assert e.client_kwargs == {"timeout": 3.0}  # type: ignore[attr-defined]
 
 
@@ -175,7 +175,7 @@ def test_incomplete_embedding_provider() -> None:
 def test_mixed_setup() -> None:
     s = make(llm_provider="azure", embedding_provider="ollama", **AZURE)
     assert type(unwrap(create_chat_model(s))).__name__ == "AzureChatOpenAI"
-    assert type(create_embeddings(s)).__name__ == "OllamaEmbeddings"
+    assert type(unwrap(create_embeddings(s))).__name__ == "OllamaEmbeddings"
 
 
 def test_missing_package_raises_provider_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,7 +221,7 @@ def test_lifespan_builds_once_and_logs(tmp_path: Path, caplog: pytest.LogCapture
         with TestClient(create_app(s)) as client:
             state = client.app.state  # type: ignore[attr-defined]
             assert type(unwrap(state.chat_model)).__name__ == "AzureChatOpenAI"
-            assert type(state.embeddings).__name__ == "OllamaEmbeddings"
+            assert type(unwrap(state.embeddings)).__name__ == "OllamaEmbeddings"
             assert type(state.vector_store).__name__ == "Chroma"
     assert "LLM_PROVIDER=azure client=AzureChatOpenAI" in caplog.text
     assert "EMBEDDING_PROVIDER=ollama client=OllamaEmbeddings" in caplog.text

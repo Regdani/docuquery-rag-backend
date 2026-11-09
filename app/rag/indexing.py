@@ -10,6 +10,7 @@ from pathlib import Path
 from langchain_core.vectorstores import VectorStore
 
 from app.core.config import Settings
+from app.core.errors import ServiceError
 from app.rag.chunking import chunk_documents
 from app.rag.index_status import IndexStatus
 from app.rag.loader import ManualDocument, load_documents
@@ -90,6 +91,8 @@ def run_indexing(
             vector_store.add_documents(chunks, ids=ids)
             _write_state(state_path, fingerprint, ids)
     except Exception as exc:  # noqa: BLE001 - any failure must end up as a failed status
+        if isinstance(exc, ServiceError):
+            return _failed(embedding_model, exc.message)
         return _failed(embedding_model, f"{type(exc).__name__}: {exc}")
 
     logger.info(

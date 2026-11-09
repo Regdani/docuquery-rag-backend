@@ -74,6 +74,8 @@ The chat model and the embeddings are chosen with `LLM_PROVIDER` (`azure`, `gemi
 
 For the cloud providers, vendor failures are translated into three domain errors: a timeout (`llm_timeout`, HTTP 504), an unreachable provider or a 5xx answer (`llm_unavailable`, 503) and rate limiting (`llm_rate_limited`, 429). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
 
+Ollama runs locally, so there are no rate limits and no retries. Its failures use the same domain errors (a timeout is `llm_timeout`, 504; an unreachable server or a model that is not pulled is `llm_unavailable`, 503), and the message names the base URL and, for a missing model, the `ollama pull <model>` command.
+
 ### Configure Azure OpenAI
 
 Azure OpenAI is the primary, production-like mode: a managed service with a stable API, predictable quotas and enterprise data-handling terms. Create a chat deployment and an embedding deployment in your Azure OpenAI resource, then set:
@@ -110,6 +112,61 @@ GOOGLE_API_KEY=<key> uv run pytest -m integration -k gemini
 
 You can also list the models your key can use with `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>`. If the embedding model is not available to you, set `GEMINI_EMBEDDING_MODEL` to another model from that list.
 
+### Configure Ollama (free local mode)
+
+Ollama runs the chat model and the embeddings on your own machine: no account, no key, no cost. It is the default provider.
+
+1. Install Ollama from https://ollama.com/download (Windows, macOS, Linux).
+2. Pull the two default models:
+
+   ```bash
+   ollama pull llama3.2:3b
+   ollama pull nomic-embed-text
+   ```
+
+3. Make sure the server is running. The desktop installers start it automatically; otherwise run `ollama serve`. It listens on `http://localhost:11434`.
+4. Configure the application (these are the defaults, so a plain `.env` copied from `.env.example` already works):
+
+   ```env
+   LLM_PROVIDER=ollama
+   # EMBEDDING_PROVIDER defaults to LLM_PROVIDER; set it only for a mixed setup
+   OLLAMA_BASE_URL=http://localhost:11434
+   OLLAMA_CHAT_MODEL=llama3.2:3b
+   OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+   ```
+
+5. Build the index and start the application:
+
+   ```bash
+   uv sync
+   uv run python -m app.ingest
+   uv run uvicorn app.main:app --reload
+   ```
+
+No key variable is needed. The index collection for this setup is `manuals-ollama-nomic-embed-text`. The question-answering endpoint is not part of the application yet, so local mode is verified today at the level of the chat model, the embeddings and the retriever (see the integration test below).
+
+If Ollama is not running, ingest prints `Ollama is not reachable at <base url>. Start it with 'ollama serve' or check OLLAMA_BASE_URL` and exits with 1; if a model is missing, the message names it and says `ollama pull <model>`. The application itself still starts, and endpoints that need the index answer `503`.
+
+Integration test against the real server (indexes one sample manual into a temporary directory, retrieves a relevant chunk and makes one chat call):
+
+```bash
+uv run pytest -m integration -k ollama
+```
+
+It is skipped, not failed, when Ollama is unreachable or a configured model is not pulled.
+
+Which of these commands were run: the ingest command was run with Ollama stopped and printed the unreachable message above, and the integration test was run with Ollama stopped and was skipped. The installation, the pulls and the successful runs against a live server were not run, because Ollama is not installed on the machine where this section was written.
+
+#### Hardware, speed and quality (estimates, not measured)
+
+These figures are rough estimates from the public model sizes; they were not measured on this project.
+
+- **Memory:** `llama3.2:3b` is about a 2 GB download and needs roughly 3 to 4 GB of free RAM (or VRAM) while loaded; `nomic-embed-text` is about 270 MB and needs well under 1 GB. Plan for about 8 GB of RAM in total, with room for the operating system and the application.
+- **CPU or GPU:** both models run on a CPU only. A GPU with 4 GB or more of VRAM (or Apple Silicon) is considerably faster but not required.
+- **Speed on a CPU:** expect a few seconds before the first token and roughly 5 to 20 generated tokens per second on a recent laptop CPU, so a short answer takes several seconds to half a minute. Indexing the seven sample manuals should take on the order of tens of seconds to a few minutes on a CPU the first time; later starts reuse the persisted index. Raise `LLM_TIMEOUT_SECONDS` on slow machines, and note that the first request after a pause also loads the model into memory.
+- **Quality limits:** a 3B model gives noticeably weaker answers than the cloud models. It can ignore the retrieved context or make up details (hallucination), follows instructions less reliably, handles long context poorly and is clearly weaker in languages other than English. The sample manuals are in English, which is the best case.
+- **Concurrency:** a single local server processes few requests at a time; parallel questions queue up. This mode is meant for development, demos and offline use.
+
 ### Mixed setup: cloud chat with local embeddings
 
 Chat answers can come from Gemini while the embeddings stay local and free:
@@ -122,10 +179,10 @@ GOOGLE_API_KEY=<key>
 
 Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001` (names checked with the provider factory). The old collection stays in `INDEX_DIR` unused.
 
-### Integration tests for the cloud providers
+### Integration tests
 
 ```bash
 uv run pytest -m integration
 ```
 
-The Azure and Gemini tests make one real chat call and one embedding call. They are skipped (not failed) when the credentials are not set.
+The Azure and Gemini tests make one real chat call and one embedding call. They are skipped (not failed) when the credentials are not set. The Ollama tests are skipped when the server is unreachable or a model is not pulled (see "Configure Ollama").

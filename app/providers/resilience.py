@@ -1,5 +1,7 @@
 """Error translation and bounded 429 retry around cloud chat models and embeddings.
 
+Ollama gets the same wrappers with its own translator (clear messages, no retries).
+
 Vendor exception types are imported lazily here (and nowhere else). Provider failures are
 mapped to LLMTimeoutError / LLMUnavailableError / LLMRateLimitedError; anything unrecognised
 (programming errors, bad input) is re-raised untouched. Domain error messages only carry the
@@ -84,11 +86,63 @@ def translate_error(provider: str, exc: BaseException) -> ServiceError | None:
     return None
 
 
+Translator = Callable[[BaseException], ServiceError | None]
+
+
+def ollama_translator(base_url: str, model: str) -> Translator:
+    """Error translation for a local Ollama server (no keys, no 429s).
+
+    Messages name the base URL and the model and say how to fix it; the vendor message is never
+    included.
+    """
+
+    def translate(exc: BaseException) -> ServiceError | None:
+        if isinstance(exc, ServiceError):
+            return exc
+        name = type(exc).__name__
+        http_timeout = _vendor_types("httpx", ["TimeoutException"])
+        if isinstance(exc, TimeoutError) or (http_timeout and isinstance(exc, http_timeout)):
+            return LLMTimeoutError(
+                f"Ollama at {base_url} did not answer in time (model '{model}', {name})"
+            )
+        http_transport = _vendor_types("httpx", ["TransportError"])
+        if isinstance(exc, ConnectionError) or (http_transport and isinstance(exc, http_transport)):
+            return LLMUnavailableError(
+                f"Ollama is not reachable at {base_url}. Start it with 'ollama serve' "
+                f"or check OLLAMA_BASE_URL ({name})"
+            )
+        response_errors = _vendor_types("ollama", ["ResponseError"])
+        if response_errors and isinstance(exc, response_errors):
+            status = getattr(exc, "status_code", -1)
+            if status == 404:
+                return LLMUnavailableError(
+                    f"Ollama model '{model}' was not found at {base_url}. Run 'ollama pull {model}'"
+                )
+            if status == 408 or status == 504:
+                return LLMTimeoutError(
+                    f"Ollama at {base_url} did not answer in time (model '{model}', {name})"
+                )
+            if isinstance(status, int) and status >= 500:
+                return LLMUnavailableError(
+                    f"Ollama at {base_url} failed with status {status} (model '{model}')"
+                )
+        return None
+
+    return translate
+
+
 class RetryPolicy:
     """Bounded retry of rate-limited calls: at most `max_retries` retries, exponential backoff."""
 
-    def __init__(self, provider: str, max_retries: int, backoff_seconds: float) -> None:
+    def __init__(
+        self,
+        provider: str,
+        max_retries: int,
+        backoff_seconds: float,
+        translator: Translator | None = None,
+    ) -> None:
         self.provider = provider
+        self._translator = translator
         self.max_retries = max(0, max_retries)
         self.backoff_seconds = max(0.0, backoff_seconds)
 
@@ -97,7 +151,7 @@ class RetryPolicy:
 
     def _handle(self, exc: Exception, attempt: int) -> float:
         """Return the delay before the next attempt, or raise the final error."""
-        domain = translate_error(self.provider, exc)
+        domain = self._translator(exc) if self._translator else translate_error(self.provider, exc)
         if domain is None:
             raise exc
         if isinstance(domain, LLMRateLimitedError) and attempt < self.max_retries:
@@ -142,13 +196,16 @@ class ResilientChatModel(BaseChatModel):
     provider: str
     rate_limit_retries: int = 0
     backoff_seconds: float = 0.0
+    translator: Translator | None = None
 
     @property
     def _llm_type(self) -> str:
         return f"resilient-{self.inner._llm_type}"
 
     def _policy(self) -> RetryPolicy:
-        return RetryPolicy(self.provider, self.rate_limit_retries, self.backoff_seconds)
+        return RetryPolicy(
+            self.provider, self.rate_limit_retries, self.backoff_seconds, self.translator
+        )
 
     def _generate(
         self,
