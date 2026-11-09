@@ -1,12 +1,10 @@
 """Application settings loaded from environment variables and an optional `.env` file."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-ProviderName = Literal["azure", "gemini", "ollama"]
 
 
 class Settings(BaseSettings):
@@ -21,8 +19,8 @@ class Settings(BaseSettings):
     )
 
     # Provider selection
-    llm_provider: ProviderName = "ollama"
-    embedding_provider: ProviderName | None = Field(
+    llm_provider: str = "ollama"
+    embedding_provider: str | None = Field(
         default=None, description="Defaults to llm_provider when unset."
     )
 
@@ -63,6 +61,16 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    @field_validator("llm_provider", "embedding_provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, value: Any, info: ValidationInfo) -> Any:
+        # Unknown values are rejected by the provider factory with ProviderConfigError.
+        if isinstance(value, str):
+            value = value.strip().lower()
+            if not value:
+                return None if info.field_name == "embedding_provider" else "ollama"
+        return value
 
     @model_validator(mode="after")
     def _default_embedding_provider(self) -> "Settings":
