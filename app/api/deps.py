@@ -3,6 +3,7 @@
 from fastapi import Request
 
 from app.core.errors import IndexNotReadyError
+from app.memory.store import InMemorySessionStore
 from app.rag.index_status import IndexStatus
 
 
@@ -20,3 +21,9 @@ def require_index_ready(request: Request) -> IndexStatus:
     if status.state == "indexing":
         raise IndexNotReadyError("The document index is still being built; retry shortly.")
     raise IndexNotReadyError(f"The document index is unavailable: {status.error}")
+
+
+def get_store(request: Request) -> InMemorySessionStore:
+    """Return the session store created at startup (override in tests)."""
+    store: InMemorySessionStore = request.app.state.session_store
+    return store

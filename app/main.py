@@ -13,6 +13,7 @@ from langchain_core.vectorstores import VectorStore
 
 from app.api.handlers import register_exception_handlers
 from app.core.config import Settings, get_settings
+from app.memory.store import get_session_store
 from app.providers.factory import (
     client_name,
     create_chat_model,
@@ -52,6 +53,12 @@ def create_app(
         )
         model_name = embedding_model_name(resolved)
         store = vector_store or create_vector_store(resolved, emb)
+        session_store = get_session_store(resolved)
+        app.state.session_store = session_store
+        logger.info(
+            "Conversation history is in memory only, lost on restart; max %d messages per session",
+            resolved.history_max_messages,
+        )
         app.state.chat_model = chat
         app.state.embeddings = emb
         app.state.vector_store = store

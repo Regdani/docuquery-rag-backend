@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     retry_backoff_seconds: float = 0.5
     max_question_length: int = 1000
     max_concurrent_requests: int = 8
+    history_max_messages: int = Field(
+        default=20, ge=1, description="Most recent messages kept per session."
+    )
 
     # Logging
     log_level: str = "INFO"
