@@ -67,3 +67,65 @@ Chroma runs embedded and is persisted to `INDEX_DIR` (`./data/index`). It needs 
 - A fingerprint (SHA-256 over the sorted file names and contents, the embedding model, the chunk size and the overlap) is stored next to the index. If it is unchanged and all chunks are present, the persisted index is reused and no embedding calls are made. Otherwise the old chunks are deleted and the index is rebuilt without duplicates.
 - A first start (or a start after a change) is slower because every chunk is embedded; later starts are fast.
 - With several instances, each one indexes on its own (there is no coordination between instances), which costs duplicate embedding work. A shared index built once by a separate job is the next step.
+
+## Model providers
+
+The chat model and the embeddings are chosen with `LLM_PROVIDER` (`azure`, `gemini` or `ollama`, default `ollama`) and `EMBEDDING_PROVIDER` (defaults to `LLM_PROVIDER`). A missing variable or an unknown value stops the application at startup with an error that names the variable; there is never a silent fallback. Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.
+
+For the cloud providers, vendor failures are translated into three domain errors: a timeout (`llm_timeout`, HTTP 504), an unreachable provider or a 5xx answer (`llm_unavailable`, 503) and rate limiting (`llm_rate_limited`, 429). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
+
+### Configure Azure OpenAI
+
+Azure OpenAI is the primary, production-like mode: a managed service with a stable API, predictable quotas and enterprise data-handling terms. Create a chat deployment and an embedding deployment in your Azure OpenAI resource, then set:
+
+```env
+LLM_PROVIDER=azure
+AZURE_OPENAI_API_KEY=<key>
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+AZURE_OPENAI_API_VERSION=2024-10-21
+AZURE_OPENAI_CHAT_DEPLOYMENT=<chat deployment name>
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=<embedding deployment name>
+```
+
+`AZURE_OPENAI_API_VERSION` has a default and may be omitted. The deployment names are the names you gave the deployments, not the model names.
+
+### Configure Google Gemini
+
+Gemini is the cloud mode that can be tried for free: create an API key in Google AI Studio and set:
+
+```env
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=<key>
+GEMINI_CHAT_MODEL=gemini-3.1-flash-lite
+GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+```
+
+Only `GOOGLE_API_KEY` is required. `gemini-3.1-flash-lite` is the small, low-latency, low-cost model, which is enough for answering from a few retrieved manual chunks and stays within free-tier rate limits. `gemini-embedding-001` is Google's general-purpose text embedding model. The free tier is rate limited, so a first indexing run may hit 429 answers; they are retried with backoff.
+
+Availability of the embedding model: the key-gated integration test calls `embed_query` with `gemini-embedding-001`. It was not executed while this section was written (no key was available), so confirm it with your own key:
+
+```bash
+GOOGLE_API_KEY=<key> uv run pytest -m integration -k gemini
+```
+
+You can also list the models your key can use with `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>`. If the embedding model is not available to you, set `GEMINI_EMBEDDING_MODEL` to another model from that list.
+
+### Mixed setup: cloud chat with local embeddings
+
+Chat answers can come from Gemini while the embeddings stay local and free:
+
+```env
+LLM_PROVIDER=gemini
+EMBEDDING_PROVIDER=ollama
+GOOGLE_API_KEY=<key>
+```
+
+Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001` (names checked with the provider factory). The old collection stays in `INDEX_DIR` unused.
+
+### Integration tests for the cloud providers
+
+```bash
+uv run pytest -m integration
+```
+
+The Azure and Gemini tests make one real chat call and one embedding call. They are skipped (not failed) when the credentials are not set.

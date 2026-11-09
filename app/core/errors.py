@@ -23,3 +23,24 @@ class ProviderConfigError(ServiceError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="provider_config_error", status_code=500)
+
+
+class LLMTimeoutError(ServiceError):
+    """Raised when the chat or embedding provider did not answer within the timeout."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="llm_timeout", status_code=504)
+
+
+class LLMUnavailableError(ServiceError):
+    """Raised when the provider is unreachable or fails with a server-side (5xx) error."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="llm_unavailable", status_code=503)
+
+
+class LLMRateLimitedError(ServiceError):
+    """Raised when the provider keeps answering HTTP 429 after the bounded retries."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="llm_rate_limited", status_code=429)

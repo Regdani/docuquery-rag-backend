@@ -14,6 +14,7 @@ from langchain_core.vectorstores import VectorStore
 from app.api.handlers import register_exception_handlers
 from app.core.config import Settings, get_settings
 from app.providers.factory import (
+    client_name,
     create_chat_model,
     create_embeddings,
     create_vector_store,
@@ -44,10 +45,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         chat = chat_model or create_chat_model(resolved)
-        logger.info("LLM_PROVIDER=%s client=%s", resolved.llm_provider, type(chat).__name__)
+        logger.info("LLM_PROVIDER=%s client=%s", resolved.llm_provider, client_name(chat))
         emb = embeddings or create_embeddings(resolved)
         logger.info(
-            "EMBEDDING_PROVIDER=%s client=%s", resolved.embedding_provider, type(emb).__name__
+            "EMBEDDING_PROVIDER=%s client=%s", resolved.embedding_provider, client_name(emb)
         )
         model_name = embedding_model_name(resolved)
         store = vector_store or create_vector_store(resolved, emb)

@@ -16,6 +16,7 @@ from app.providers.factory import (
     create_embeddings,
     create_vector_store,
 )
+from app.providers.resilience import unwrap
 from tests.fakes import DeterministicFakeEmbedding, FakeListChatModel, InMemoryVectorStore
 
 AZURE: dict[str, Any] = {
@@ -54,6 +55,29 @@ def test_service_error_pattern() -> None:
     assert (err.message, err.code, err.status_code) == ("boom", "provider_config_error", 500)
 
 
+def test_provider_defaults() -> None:
+    s = make()
+    assert s.azure_openai_api_version
+    assert s.gemini_chat_model == "gemini-3.1-flash-lite"
+    assert s.gemini_embedding_model == "gemini-embedding-001"
+
+
+def test_azure_all_missing_vars_named() -> None:
+    s = make(llm_provider="azure")
+    with pytest.raises(ProviderConfigError) as chat_exc:
+        create_chat_model(s)
+    with pytest.raises(ProviderConfigError) as emb_exc:
+        create_embeddings(s)
+    for name in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_DEPLOYMENT"):
+        assert name in str(chat_exc.value)
+    for name in (
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
+    ):
+        assert name in str(emb_exc.value)
+
+
 @pytest.mark.parametrize(
     ("provider", "extra", "chat_cls", "emb_cls"),
     [
@@ -66,21 +90,33 @@ def test_provider_classes(
     provider: str, extra: dict[str, Any], chat_cls: str, emb_cls: str
 ) -> None:
     s = make(llm_provider=provider, **extra)
-    assert type(create_chat_model(s)).__name__ == chat_cls
-    assert type(create_embeddings(s)).__name__ == emb_cls
+    assert type(unwrap(create_chat_model(s))).__name__ == chat_cls
+    assert type(unwrap(create_embeddings(s))).__name__ == emb_cls
 
 
 def test_timeouts_and_retries_applied() -> None:
     s = make(llm_provider="azure", llm_timeout_seconds=12.0, max_retries=5, **AZURE)
-    model = create_chat_model(s)
+    model = unwrap(create_chat_model(s))
     assert model.request_timeout == 12.0  # type: ignore[attr-defined]
     assert model.max_retries == 5  # type: ignore[attr-defined]
 
-    ae = create_embeddings(make(llm_provider="azure", embedding_timeout_seconds=4.0, **AZURE))
+    ae = unwrap(
+        create_embeddings(make(llm_provider="azure", embedding_timeout_seconds=4.0, **AZURE))
+    )
     assert ae.request_timeout == 4.0  # type: ignore[attr-defined]
 
-    g = create_chat_model(make(llm_provider="gemini", llm_timeout_seconds=7.0, **GEMINI))
+    g = unwrap(
+        create_chat_model(
+            make(llm_provider="gemini", llm_timeout_seconds=7.0, max_retries=3, **GEMINI)
+        )
+    )
     assert g.timeout == 7.0  # type: ignore[attr-defined]
+    assert g.max_retries == 3  # type: ignore[attr-defined]
+    ge = unwrap(
+        create_embeddings(make(llm_provider="gemini", embedding_timeout_seconds=6.0, **GEMINI))
+    )
+    assert ge.client_args == {"timeout": 6.0}  # type: ignore[attr-defined]
+    assert ge.client._api_client._httpx_client.timeout.read == 6.0  # type: ignore[attr-defined]
 
     o = create_chat_model(make(llm_timeout_seconds=9.0))
     assert o.client_kwargs == {"timeout": 9.0}  # type: ignore[attr-defined]
@@ -138,7 +174,7 @@ def test_incomplete_embedding_provider() -> None:
 
 def test_mixed_setup() -> None:
     s = make(llm_provider="azure", embedding_provider="ollama", **AZURE)
-    assert type(create_chat_model(s)).__name__ == "AzureChatOpenAI"
+    assert type(unwrap(create_chat_model(s))).__name__ == "AzureChatOpenAI"
     assert type(create_embeddings(s)).__name__ == "OllamaEmbeddings"
 
 
@@ -184,7 +220,7 @@ def test_lifespan_builds_once_and_logs(tmp_path: Path, caplog: pytest.LogCapture
     with caplog.at_level(logging.INFO, logger="app.main"):
         with TestClient(create_app(s)) as client:
             state = client.app.state  # type: ignore[attr-defined]
-            assert type(state.chat_model).__name__ == "AzureChatOpenAI"
+            assert type(unwrap(state.chat_model)).__name__ == "AzureChatOpenAI"
             assert type(state.embeddings).__name__ == "OllamaEmbeddings"
             assert type(state.vector_store).__name__ == "Chroma"
     assert "LLM_PROVIDER=azure client=AzureChatOpenAI" in caplog.text
@@ -207,6 +243,8 @@ def test_provider_imports_confined_to_providers_package() -> None:
         "openai",
         "ollama",
         "chromadb",
+        "google",
+        "httpx",
     }
     app_dir = Path(factory.__file__).resolve().parents[1]
     offenders = []

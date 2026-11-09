@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.core.errors import ProviderConfigError
+from app.providers.resilience import ResilientChatModel, ResilientEmbeddings, RetryPolicy, unwrap
 
 SUPPORTED_PROVIDERS = ("azure", "gemini", "ollama")
 
@@ -119,6 +120,8 @@ def _create_gemini_embeddings(settings: Settings) -> Embeddings:
     return GoogleGenerativeAIEmbeddings(
         model=settings.gemini_embedding_model,
         google_api_key=settings.google_api_key,
+        # The embeddings client has no max_retries; retries come from the resilience wrapper.
+        client_args={"timeout": settings.embedding_timeout_seconds},
     )
 
 
@@ -135,6 +138,8 @@ def _create_ollama_embeddings(settings: Settings) -> Embeddings:
     )
 
 
+# Cloud providers get error translation and bounded 429 retry; ollama is used as is.
+_CLOUD = frozenset({"azure", "gemini"})
 _CHAT: dict[str, Callable[[Settings], BaseChatModel]] = {
     "azure": _create_azure_chat,
     "gemini": _create_gemini_chat,
@@ -152,7 +157,15 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
     builder = _CHAT.get(settings.llm_provider)
     if builder is None:
         raise _unknown("LLM_PROVIDER", settings.llm_provider)
-    return builder(settings)
+    model = builder(settings)
+    if settings.llm_provider in _CLOUD:
+        return ResilientChatModel(
+            inner=model,
+            provider=settings.llm_provider,
+            rate_limit_retries=settings.max_retries,
+            backoff_seconds=settings.retry_backoff_seconds,
+        )
+    return model
 
 
 def create_embeddings(settings: Settings) -> Embeddings:
@@ -161,7 +174,16 @@ def create_embeddings(settings: Settings) -> Embeddings:
     builder = _EMBEDDINGS.get(provider)
     if builder is None:
         raise _unknown("EMBEDDING_PROVIDER", provider)
-    return builder(settings)
+    embeddings = builder(settings)
+    if provider in _CLOUD:
+        policy = RetryPolicy(provider, settings.max_retries, settings.retry_backoff_seconds)
+        return ResilientEmbeddings(embeddings, policy)
+    return embeddings
+
+
+def client_name(client: object) -> str:
+    """Class name of the vendor client behind any resilient wrapper (for logging)."""
+    return type(unwrap(client)).__name__
 
 
 def embedding_model_name(settings: Settings) -> str:
