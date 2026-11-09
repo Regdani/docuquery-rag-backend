@@ -18,3 +18,6 @@ class IndexStatus(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     error: str | None = None
     reused: bool = Field(default=False, description="True when the persisted index was reused.")
+    product_ids: list[str] = Field(
+        default_factory=list, description="Product IDs present in the index."
+    )

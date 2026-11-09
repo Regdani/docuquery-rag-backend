@@ -108,4 +108,5 @@ def run_indexing(
         chunk_count=len(chunks),
         embedding_model=embedding_model,
         reused=reused,
+        product_ids=sorted({d.product_id for d in docs}),
     )

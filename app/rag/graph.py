@@ -80,7 +80,15 @@ def relevant_hits(state: GraphState, threshold: float) -> list[Hit]:
     return [h for h in state.get("hits", []) if h["score"] >= threshold]
 
 
-def _source(hit: Hit) -> Source:
+def make_snippet(text: str, max_chars: int) -> str:
+    """Collapse whitespace and cap the text at `max_chars` (ellipsis included)."""
+    flat = " ".join(text.split())
+    if len(flat) <= max_chars:
+        return flat
+    return flat[: max(max_chars - 3, 0)].rstrip() + "..."
+
+
+def _source(hit: Hit, snippet_max: int) -> Source:
     meta = hit["document"].metadata
     return Source(
         product_id=str(meta.get("product_id", "")),
@@ -88,6 +96,8 @@ def _source(hit: Hit) -> Source:
         section=str(meta.get("section", "")),
         source=str(meta.get("source", "")),
         chunk_id=str(meta.get("chunk_id", hit["document"].id or "")),
+        score=hit["score"],
+        snippet=make_snippet(hit["document"].page_content, snippet_max),
     )
 
 
@@ -113,7 +123,8 @@ def build_graph(
     settings: Settings,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Compile the graph. Everything is passed in; no globals are read or written."""
-    top_k = settings.retrieval_top_k
+    default_top_k = settings.retrieval_top_k
+    snippet_max = settings.snippet_max_chars
     threshold = settings.retrieval_relevance_threshold
     max_log = settings.log_question_max_chars
 
@@ -162,10 +173,14 @@ def build_graph(
         }
 
     async def retrieve(state: GraphState) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"k": state.get("top_k") or default_top_k}
+        product_id = state.get("product_id")
+        if product_id:
+            kwargs["filter"] = {"product_id": product_id}
         pairs = await asyncio.to_thread(
             vector_store.similarity_search_with_relevance_scores,
             state["standalone_question"],
-            k=top_k,
+            **kwargs,
         )
         return {"hits": [Hit(document=doc, score=float(score)) for doc, score in pairs]}
 
@@ -187,7 +202,7 @@ def build_graph(
         return {"answer": NO_ANSWER_TEXT, "status": STATUS_NO_ANSWER, "sources": []}
 
     async def format_result(state: GraphState) -> dict[str, Any]:
-        sources = [_source(h) for h in relevant_hits(state, threshold)]
+        sources = [_source(h, snippet_max) for h in relevant_hits(state, threshold)]
         question = state.get("question", "")
         logger.info(
             "Answered question %r using sources: %s",

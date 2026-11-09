@@ -5,6 +5,7 @@ from fastapi import Request
 from app.core.errors import IndexNotReadyError
 from app.memory.store import InMemorySessionStore
 from app.rag.index_status import IndexStatus
+from app.services.qa_service import QAServiceProtocol
 
 
 def get_index_status(request: Request) -> IndexStatus:
@@ -27,3 +28,9 @@ def get_store(request: Request) -> InMemorySessionStore:
     """Return the session store created at startup (override in tests)."""
     store: InMemorySessionStore = request.app.state.session_store
     return store
+
+
+def get_qa_service(request: Request) -> QAServiceProtocol:
+    """Return the QAService created at startup (override in tests)."""
+    service: QAServiceProtocol = request.app.state.qa_service
+    return service

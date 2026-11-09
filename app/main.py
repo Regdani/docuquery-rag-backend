@@ -12,6 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
 from app.api.handlers import register_exception_handlers
+from app.api.routes import router
 from app.core.config import Settings, get_settings
 from app.memory.store import get_session_store
 from app.providers.factory import (
@@ -22,8 +23,10 @@ from app.providers.factory import (
     embedding_model_name,
     index_collection_name,
 )
+from app.rag.graph import build_graph
 from app.rag.index_status import IndexStatus
 from app.rag.indexing import run_indexing
+from app.services.qa_service import QAService
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,12 @@ def create_app(
         app.state.embeddings = emb
         app.state.vector_store = store
         app.state.index_status = IndexStatus(state="indexing", embedding_model=model_name)
+        app.state.graph = build_graph(chat, store, session_store, resolved)
+        app.state.qa_service = QAService(
+            app.state.graph,
+            lambda: app.state.index_status,
+            resolved.log_question_max_chars,
+        )
 
         async def build_index() -> None:
             app.state.index_status = await asyncio.to_thread(
@@ -80,6 +89,7 @@ def create_app(
     app.state.settings = resolved
     app.state.index_status = IndexStatus(state="indexing")
     register_exception_handlers(app)
+    app.include_router(router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> dict[str, str]:

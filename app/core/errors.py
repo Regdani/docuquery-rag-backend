@@ -18,6 +18,17 @@ class IndexNotReadyError(ServiceError):
         super().__init__(message, code="INDEX_NOT_READY", status_code=503)
 
 
+class ProductNotFoundError(ServiceError):
+    """Raised when a question is scoped to a product ID that is not in the index."""
+
+    def __init__(self, product_id: str) -> None:
+        super().__init__(
+            f"Unknown product_id '{product_id}'; it is not in the document index.",
+            code="PRODUCT_NOT_FOUND",
+            status_code=404,
+        )
+
+
 class ProviderConfigError(ServiceError):
     """Raised at startup when a provider is unknown, incomplete or not installed."""
 

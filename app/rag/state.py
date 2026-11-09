@@ -21,12 +21,16 @@ class Source(TypedDict):
     section: str
     source: str
     chunk_id: str
+    score: float
+    snippet: str
 
 
 class GraphState(TypedDict, total=False):
     """Graph state. Only `question` (and optionally `session_key`) is supplied by the caller."""
 
     session_key: str | None
+    top_k: int | None  # per-request override of RETRIEVAL_TOP_K
+    product_id: str | None  # restrict retrieval to this product
     messages: list[BaseMessage]  # prior history for the session
     question: str  # original question as asked
     standalone_question: str

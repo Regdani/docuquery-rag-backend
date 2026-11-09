@@ -108,4 +108,10 @@ class RelevanceVectorStore(InMemoryVectorStore):
 
     def similarity_search_with_score(self, query: str, k: int = 4, **kwargs: Any) -> Any:
         self.queries.append(query)
+        flt = kwargs.pop("filter", None)
+        if isinstance(flt, dict):  # Chroma-style metadata filter used by the application
+            wanted = dict(flt)
+            kwargs["filter"] = lambda doc: all(doc.metadata.get(n) == v for n, v in wanted.items())
+        elif flt is not None:
+            kwargs["filter"] = flt
         return super().similarity_search_with_score(query, k=k, **kwargs)

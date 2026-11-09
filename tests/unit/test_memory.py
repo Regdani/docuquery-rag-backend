@@ -135,7 +135,9 @@ def test_schema_strips_and_echoes() -> None:
     req = AskRequest(question="q", session_key="  abcdefgh  ")
     assert req.session_key == "abcdefgh"
     assert AskRequest(question="q").session_key is None
-    assert AskResponse(answer="a").session_key is None
+    assert (
+        AskResponse(answer="a", status="no_answer", sources=[], request_id="r").session_key is None
+    )
 
 
 @pytest.mark.parametrize("key", ["short", "x" * 65, "bad key!!"])
@@ -144,7 +146,13 @@ def test_bad_session_key_gives_422(key: str) -> None:
 
     @app.post("/probe")
     async def probe(body: AskRequest) -> AskResponse:
-        return AskResponse(answer="ok", session_key=body.session_key)
+        return AskResponse(
+            answer="ok",
+            status="answered",
+            sources=[],
+            session_key=body.session_key,
+            request_id="r",
+        )
 
     client = TestClient(app)
     assert client.post("/probe", json={"question": "q", "session_key": key}).status_code == 422

@@ -57,6 +57,10 @@ class Settings(BaseSettings):
         description="Minimum relevance score (0..1) for a retrieved chunk to be used.",
     )
 
+    snippet_max_chars: int = Field(
+        default=200, ge=20, description="Maximum length of the source snippet in answers."
+    )
+
     # Timeouts, retries and limits
     llm_timeout_seconds: float = 60.0
     embedding_timeout_seconds: float = 30.0

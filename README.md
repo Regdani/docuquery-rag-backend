@@ -105,10 +105,81 @@ flowchart TD
 - `retrieve`: fetches the top `RETRIEVAL_TOP_K` chunks with relevance scores (0 to 1). If at least one score reaches `RETRIEVAL_RELEVANCE_THRESHOLD` the flow continues with `generate`, otherwise with `no_answer`.
 - `generate`: answers from the chunks at or above the threshold only, and says so when the context does not contain the answer.
 - `no_answer`: a fixed "no relevant information" reply (`status: no_answer`, no sources, no LLM call).
-- `format`: sets `status: answered` and the sources (product ID and name, section, source file, chunk ID) of the chunks used, and logs them.
+- `format`: sets `status: answered` and the sources (product ID and name, section, source file, chunk ID, relevance score, snippet) of the chunks used, and logs them.
 - `save_history`: appends the question and the reply (answer or clarifying question) to the session.
 
 Provider errors (timeout, unavailable, rate limited) leave the graph unchanged as domain errors and nothing is saved to the history; unexpected errors are wrapped in a generic pipeline error without internal details.
+
+## Ask endpoint
+
+`POST /api/v1/ask` runs the question flow and returns the answer with the chunks it used. The route only calls `QAService`, which invokes the compiled graph; the graph and the service are built once in the application lifespan and live on `app.state`. Swagger UI (`/docs`) shows request examples (successful question, follow-up, clarification, product-scoped question) and response examples for every status and error.
+
+Request body:
+
+| Field | Required | Description |
+|---|---|---|
+| `question` | yes | The question. Whitespace is trimmed; a blank question is a `422`. |
+| `session_key` | no | 8-64 characters (letters, digits, `-`, `_`) linking follow-up questions. An empty string counts as absent. |
+| `top_k` | no | Chunks to retrieve for this request only, from 1 to 20 (otherwise `422`). Defaults to `RETRIEVAL_TOP_K`. |
+| `product_id` | no | Restricts retrieval to one product's manual (for example `KV-200`). An empty string counts as absent. |
+
+Response body: `answer`, `status`, `sources`, `session_key` and `request_id`. Each source has `product_id`, `product_name`, `section`, `chunk_id`, `score` (0 to 1) and a `snippet` capped at `SNIPPET_MAX_CHARS`.
+
+| `status` | Meaning | `sources` |
+|---|---|---|
+| `answered` | A grounded answer from relevant chunks | the chunks used |
+| `clarification_needed` | The question is unclear; `answer` is a clarifying question | empty |
+| `no_answer` | No chunk reached the relevance threshold | empty |
+
+**Unknown product:** a `product_id` that is not in the index returns `404` with the code `PRODUCT_NOT_FOUND` (not `422`, because the request is well formed and the resource it names does not exist). The known IDs come from the index itself; matching ignores case.
+
+**Index not ready:** while indexing is running or has failed, `/api/v1/ask` (like every endpoint that needs the index) returns `503` with the code `INDEX_NOT_READY`. This check runs before the body is validated.
+
+**Errors** use the body `{"detail", "code", "request_id"}`: `404` unknown product, `422` invalid input (FastAPI's standard validation body for now), `429` provider rate limit, `503` index not ready or provider unavailable, `504` provider timeout, `500` unexpected pipeline failure. `502` is documented for an invalid upstream response but no code path produces it yet.
+
+**Request ID:** the `X-Request-ID` header is used when the client sends one, otherwise an ID is generated. It is returned in the `X-Request-ID` response header and in `request_id` of success and error bodies, and appears in the log lines of the request together with each source's product, section, chunk ID and score. The question is logged truncated to `LOG_QUESTION_MAX_CHARS`.
+
+Sample requests:
+
+```bash
+# A question
+curl -s -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How often should I descale the KV-200 coffee maker?"}'
+
+# A follow-up in the same conversation
+curl -s -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "And the KV-300?", "session_key": "demo-session-01"}'
+
+# Restricted to one product, with a custom number of chunks
+curl -s -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How do I descale it?", "product_id": "KV-200", "top_k": 6}'
+```
+
+Example response:
+
+```json
+{
+  "answer": "Descale the KV-200 every 60 days or after 200 brew cycles.",
+  "status": "answered",
+  "sources": [
+    {
+      "product_id": "KV-200",
+      "product_name": "Espresso Coffee Maker",
+      "section": "Maintenance",
+      "chunk_id": "kv-200-espresso-coffee-maker.md::3::0",
+      "score": 0.82,
+      "snippet": "Descale the machine every 60 days or after 200 brew cycles."
+    }
+  ],
+  "session_key": null,
+  "request_id": "3f2b8c1e9d7a4e6f8a1b2c3d4e5f6a7b"
+}
+```
+
+Which of this was run: the sample requests were sent to a running `uvicorn` with Ollama stopped, and the server answered `503` `INDEX_NOT_READY` with the `X-Request-ID` echoed. The success, follow-up, product-scoped, `404`, `422` and error paths were run through the automated API tests with fake providers, not against a real model; the example response above is illustrative and was not produced by a real model.
 
 ## Model providers
 
@@ -185,7 +256,7 @@ Ollama runs the chat model and the embeddings on your own machine: no account, n
    uv run uvicorn app.main:app --reload
    ```
 
-No key variable is needed. The index collection for this setup is `manuals-ollama-nomic-embed-text`. The question-answering endpoint is not part of the application yet, so local mode is verified today at the level of the chat model, the embeddings and the retriever (see the integration test below).
+No key variable is needed. The index collection for this setup is `manuals-ollama-nomic-embed-text`. Local mode is verified at the level of the chat model, the embeddings and the retriever by the integration test below; `POST /api/v1/ask` needs a running Ollama to answer.
 
 If Ollama is not running, ingest prints `Ollama is not reachable at <base url>. Start it with 'ollama serve' or check OLLAMA_BASE_URL` and exits with 1; if a model is missing, the message names it and says `ollama pull <model>`. The application itself still starts, and endpoints that need the index answer `503`.
 

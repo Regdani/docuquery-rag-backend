@@ -79,15 +79,17 @@ async def test_successful_answer() -> None:
     out = await graph.ainvoke({"question": QUESTION})
     assert out["status"] == "answered"
     assert out["answer"] == "It is 24 dB."
-    assert out["sources"] == [
-        {
-            "product_id": "AP-120",
-            "product_name": "PureAir Air Purifier",
-            "section": "Specifications",
-            "source": "ap-120.md",
-            "chunk_id": "ap-120.md::0::0",
-        }
-    ]
+    assert len(out["sources"]) == 1
+    source = out["sources"][0]
+    assert source.pop("score") >= 0.5
+    assert source.pop("snippet") == QUESTION
+    assert source == {
+        "product_id": "AP-120",
+        "product_name": "PureAir Air Purifier",
+        "section": "Specifications",
+        "source": "ap-120.md",
+        "chunk_id": "ap-120.md::0::0",
+    }
     assert model.calls_with("rewrite follow-up") == []
 
 
