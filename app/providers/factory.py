@@ -4,6 +4,7 @@ Provider packages are imported lazily inside the `_create_*` functions. Missing 
 or an unknown provider raises ProviderConfigError; there is never a fallback to another provider.
 """
 
+import re
 from collections.abc import Callable, Sequence
 
 from langchain_core.embeddings import Embeddings
@@ -163,6 +164,25 @@ def create_embeddings(settings: Settings) -> Embeddings:
     return builder(settings)
 
 
+def embedding_model_name(settings: Settings) -> str:
+    """Name of the embedding model/deployment the configured embedding provider uses."""
+    provider = settings.embedding_provider or settings.llm_provider
+    names = {
+        "azure": settings.azure_openai_embedding_deployment,
+        "gemini": settings.gemini_embedding_model,
+        "ollama": settings.ollama_embedding_model,
+    }
+    if provider not in names:
+        raise _unknown("EMBEDDING_PROVIDER", provider)
+    return f"{provider}:{names[provider]}"
+
+
+def index_collection_name(settings: Settings) -> str:
+    """Collection name = `chroma_collection` + sanitized embedding model, so indexes never mix."""
+    suffix = re.sub(r"[^a-zA-Z0-9]+", "-", embedding_model_name(settings)).strip("-").lower()
+    return f"{settings.chroma_collection}-{suffix}"[:512].strip("-")
+
+
 def create_vector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
     """Build the persistent Chroma vector store (no network access with local embeddings)."""
     try:
@@ -170,7 +190,7 @@ def create_vector_store(settings: Settings, embeddings: Embeddings) -> VectorSto
     except ImportError as exc:
         raise _import_error("chroma", "langchain-chroma", exc) from exc
     return Chroma(
-        collection_name=settings.chroma_collection,
+        collection_name=index_collection_name(settings),
         embedding_function=embeddings,
         persist_directory=settings.index_dir,
     )

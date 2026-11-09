@@ -11,6 +11,13 @@ class ServiceError(Exception):
         self.status_code = status_code
 
 
+class IndexNotReadyError(ServiceError):
+    """Raised while the document index is still being built or failed to build."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="INDEX_NOT_READY", status_code=503)
+
+
 class ProviderConfigError(ServiceError):
     """Raised at startup when a provider is unknown, incomplete or not installed."""
 

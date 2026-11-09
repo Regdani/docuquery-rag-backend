@@ -178,6 +178,7 @@ def test_lifespan_builds_once_and_logs(tmp_path: Path, caplog: pytest.LogCapture
         llm_provider="azure",
         embedding_provider="ollama",
         index_dir=str(tmp_path / "index"),
+        data_dir=str(tmp_path / "missing"),
         **AZURE,
     )
     with caplog.at_level(logging.INFO, logger="app.main"):
