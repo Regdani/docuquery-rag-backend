@@ -1,0 +1,52 @@
+# Local mode (default):   docker compose up --build -d
+# Cloud mode (no Ollama): docker compose --profile cloud up --build -d app-cloud
+# Both app services publish port 8000, so run only one of them at a time.
+
+x-app: &app
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  ports:
+    - "${APP_PORT:-8000}:8000"
+  volumes:
+    - index:/app/data/index
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *app
+    environment:
+      # Overrides any value from .env: inside compose Ollama is reachable by service name.
+      OLLAMA_BASE_URL: http://ollama:11434
+      INDEX_DIR: /app/data/index
+    depends_on:
+      - ollama
+
+  # Same image as `app`, without the Ollama dependency; provider and keys come from .env.
+  app-cloud:
+    <<: *app
+    profiles: ["cloud"]
+    environment:
+      INDEX_DIR: /app/data/index
+
+  ollama:
+    image: ollama/ollama:0.12.6
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+    # Optional NVIDIA GPU passthrough: see the README.
+
+volumes:
+  index:
+  ollama:

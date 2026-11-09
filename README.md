@@ -370,6 +370,48 @@ GOOGLE_API_KEY=<key>
 
 Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001` (names checked with the provider factory). The old collection stays in `INDEX_DIR` unused.
 
+## Run with Docker
+
+The `Dockerfile` builds a `python:3.12-slim` image that installs the locked dependencies with uv (`uv sync --frozen --no-dev`), runs as the non-root user `appuser` and starts `uvicorn app.main:app` on `0.0.0.0:8000`. The sample manuals are baked into the image; the index is not. `docker-compose.yml` defines:
+
+- `app`: the API with Ollama as its provider (local mode); `OLLAMA_BASE_URL` is set to `http://ollama:11434` by compose, overriding `.env`.
+- `ollama`: the Ollama server (`ollama/ollama`), with the models stored in the named volume `ollama`.
+- `app-cloud`: the same image without Ollama, in the `cloud` profile, for Azure OpenAI or Gemini.
+
+The index lives in the named volume `index` (mounted at `INDEX_DIR=/app/data/index`), so it survives restarts and is shared by the `app` and the ingest command. A `.env` file is optional; copy `.env.example` to `.env` to change settings. The health check of the API container calls `GET /health`.
+
+### Local mode (Ollama)
+
+```bash
+docker compose up --build -d
+docker compose exec ollama ollama pull llama3.2:3b
+docker compose exec ollama ollama pull nomic-embed-text
+docker compose run --rm app python -m app.ingest
+docker compose restart app
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application/json"   -d '{"question": "How do I descale the espresso machine?"}'
+```
+
+Pull both models before the ingest step and before the first question: without them the startup indexing fails (the API still starts and `/health` answers 200, but `/health/ready` reports `503` and `/api/v1/ask` returns `503`). The pulls are a one-time download of about 2 GB (`llama3.2:3b`) and 270 MB (`nomic-embed-text`) into the `ollama` volume; plan for about 8 GB of RAM and several GB of free disk for the images and models (see the hardware notes above). The app also indexes at startup, so the ingest command only pre-builds the index in the shared volume; the restart makes a running app pick it up. To use an NVIDIA GPU, add a `deploy.resources.reservations.devices` entry to the `ollama` service (requires the NVIDIA Container Toolkit); this is optional and not configured here.
+
+### Cloud mode (Azure OpenAI or Gemini)
+
+Set the provider and its keys in `.env` (names in `.env.example`), for example:
+
+```env
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=<key>
+```
+
+or `LLM_PROVIDER=azure` with the `AZURE_OPENAI_*` variables, then start only the cloud service:
+
+```bash
+docker compose --profile cloud up --build -d app-cloud
+docker compose run --rm app-cloud python -m app.ingest
+```
+
+Ollama is not started. Both app services publish port 8000, so run only one of them at a time; set `APP_PORT` in `.env` to publish another host port. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
+
 ## Testing
 
 ```bash

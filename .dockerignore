@@ -1,0 +1,21 @@
+.git
+.github
+.venv
+venv
+.env
+.env.*
+!.env.example
+data/index
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.claude
+CLAUDE.md
+scripts
+# Tests are not needed at runtime (dev dependencies are not installed in the image)
+tests
+Dockerfile
+docker-compose.yml
+.dockerignore
