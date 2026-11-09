@@ -1,24 +1,18 @@
 """Graph-ready history nodes: load the transcript first, save it last.
 
-State shape (provisional): `session_key`, `question`, `answer`, `messages` (prior history).
-Both nodes skip the store entirely when no session key is given.
+They work on the shared `GraphState` (`session_key`, `question`, `answer`,
+`messages`). Both nodes skip the store entirely when no session key is given.
 """
 
-from typing import Any, TypedDict
+from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.memory.store import InMemorySessionStore
+from app.rag.state import GraphState
 
 
-class HistoryState(TypedDict, total=False):
-    session_key: str | None
-    question: str
-    answer: str
-    messages: list[BaseMessage]
-
-
-async def load_history(store: InMemorySessionStore, state: HistoryState) -> dict[str, Any]:
+async def load_history(store: InMemorySessionStore, state: GraphState) -> dict[str, Any]:
     """Put the stored messages for the session into the state."""
     key = state.get("session_key")
     if not key:
@@ -26,7 +20,7 @@ async def load_history(store: InMemorySessionStore, state: HistoryState) -> dict
     return {"messages": await store.get_messages(key)}
 
 
-async def save_history(store: InMemorySessionStore, state: HistoryState) -> dict[str, Any]:
+async def save_history(store: InMemorySessionStore, state: GraphState) -> dict[str, Any]:
     """Store history + the new user message + the assistant reply (answer or clarification)."""
     key = state.get("session_key")
     if not key:

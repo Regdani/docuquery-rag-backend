@@ -78,6 +78,38 @@ Follow-up questions work when the client sends a `session_key` (8-64 characters:
 - **Limits:** history lives in process memory only and is lost on restart. Several instances do not share it, so a follow-up routed to another instance starts empty. It is not a LangGraph checkpointer, and the key is not authentication: anyone who knows a key can read and extend that session. The number of sessions is not bounded.
 - **Production alternative:** store the transcripts in Redis (with a TTL) or PostgreSQL, behind the same get/save interface, so that all instances share them and they survive restarts.
 
+## Question flow
+
+Every question runs through a LangGraph graph that is compiled once at startup. The state (question, history, hits, answer, sources, status) is created per request, so requests share nothing except the session store.
+
+```mermaid
+flowchart TD
+    __start__([start]) --> load_history
+    load_history --> condense
+    condense --> assess
+    assess -- clear --> retrieve
+    assess -- unclear --> clarify
+    retrieve -- relevant hit --> generate
+    retrieve -- no hit --> no_answer
+    generate --> format
+    format --> save_history
+    clarify --> save_history
+    no_answer --> save_history
+    save_history --> __end__([end])
+```
+
+- `load_history`: loads the stored messages for the `session_key` (nothing without a key).
+- `condense`: with history, one LLM call rewrites a follow-up into a standalone question; without history it makes no LLM call.
+- `assess`: one LLM call decides whether the question is clear enough to search. If the answer cannot be parsed, the question is treated as clear so retrieval still runs.
+- `clarify`: the LLM asks one targeted clarifying question (`status: clarification_needed`); retrieval and generation are skipped.
+- `retrieve`: fetches the top `RETRIEVAL_TOP_K` chunks with relevance scores (0 to 1). If at least one score reaches `RETRIEVAL_RELEVANCE_THRESHOLD` the flow continues with `generate`, otherwise with `no_answer`.
+- `generate`: answers from the chunks at or above the threshold only, and says so when the context does not contain the answer.
+- `no_answer`: a fixed "no relevant information" reply (`status: no_answer`, no sources, no LLM call).
+- `format`: sets `status: answered` and the sources (product ID and name, section, source file, chunk ID) of the chunks used, and logs them.
+- `save_history`: appends the question and the reply (answer or clarifying question) to the session.
+
+Provider errors (timeout, unavailable, rate limited) leave the graph unchanged as domain errors and nothing is saved to the history; unexpected errors are wrapped in a generic pipeline error without internal details.
+
 ## Model providers
 
 The chat model and the embeddings are chosen with `LLM_PROVIDER` (`azure`, `gemini` or `ollama`, default `ollama`) and `EMBEDDING_PROVIDER` (defaults to `LLM_PROVIDER`). A missing variable or an unknown value stops the application at startup with an error that names the variable; there is never a silent fallback. Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.

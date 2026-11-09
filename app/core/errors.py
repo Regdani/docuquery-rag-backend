@@ -44,3 +44,10 @@ class LLMRateLimitedError(ServiceError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="llm_rate_limited", status_code=429)
+
+
+class RAGPipelineError(ServiceError):
+    """Raised when a question-graph step fails unexpectedly; the message never leaks details."""
+
+    def __init__(self, message: str = "The question could not be processed.") -> None:
+        super().__init__(message, code="rag_pipeline_error", status_code=500)

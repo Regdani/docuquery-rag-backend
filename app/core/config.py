@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 100
     retrieval_top_k: int = 4
+    retrieval_relevance_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description="Minimum relevance score (0..1) for a retrieved chunk to be used.",
+    )
 
     # Timeouts, retries and limits
     llm_timeout_seconds: float = 60.0
@@ -64,6 +70,7 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+    log_question_max_chars: int = Field(default=80, ge=0)
 
     @field_validator("llm_provider", "embedding_provider", mode="before")
     @classmethod

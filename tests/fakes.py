@@ -1,5 +1,6 @@
 """Test-only doubles built on langchain-core."""
 
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
@@ -14,6 +15,8 @@ __all__ = [
     "FlakyChatModel",
     "FlakyEmbeddings",
     "InMemoryVectorStore",
+    "RelevanceVectorStore",
+    "ScriptedChatModel",
 ]
 
 
@@ -65,3 +68,44 @@ class FlakyEmbeddings(Embeddings):
     def embed_query(self, text: str) -> list[float]:
         self._maybe_fail()
         return [1.0, 0.0]
+
+
+class ScriptedChatModel(BaseChatModel):
+    """Answers via `responder(messages)` and records every call's messages in `prompts`."""
+
+    responder: Any = None
+    prompts: list[list[BaseMessage]] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.prompts.append(list(messages))
+        reply = self.responder(messages)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=reply))])
+
+    def calls_with(self, marker: str) -> list[list[BaseMessage]]:
+        """Calls whose system prompt contains `marker`."""
+        return [p for p in self.prompts if marker in str(p[0].content)]
+
+
+class RelevanceVectorStore(InMemoryVectorStore):
+    """In-memory store with relevance scores (cosine clipped to 0..1) that logs its queries."""
+
+    def __init__(self, embedding: Embeddings) -> None:
+        super().__init__(embedding)
+        self.queries: list[str] = []
+
+    def _select_relevance_score_fn(self) -> Callable[[float], float]:
+        return lambda score: max(0.0, min(1.0, score))
+
+    def similarity_search_with_score(self, query: str, k: int = 4, **kwargs: Any) -> Any:
+        self.queries.append(query)
+        return super().similarity_search_with_score(query, k=k, **kwargs)
