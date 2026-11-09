@@ -66,7 +66,12 @@ class Settings(BaseSettings):
     embedding_timeout_seconds: float = 30.0
     max_retries: int = 2
     retry_backoff_seconds: float = 0.5
-    max_question_length: int = 1000
+    max_question_length: int = Field(default=1000, ge=1)
+    rate_limit_retry_after_seconds: int = Field(
+        default=5,
+        ge=1,
+        description="Retry-After value sent with 503 LLM_RATE_LIMITED when the provider gave none.",
+    )
     max_concurrent_requests: int = 8
     history_max_messages: int = Field(
         default=20, ge=1, description="Most recent messages kept per session."

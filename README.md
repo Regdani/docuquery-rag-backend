@@ -108,7 +108,7 @@ flowchart TD
 - `format`: sets `status: answered` and the sources (product ID and name, section, source file, chunk ID, relevance score, snippet) of the chunks used, and logs them.
 - `save_history`: appends the question and the reply (answer or clarifying question) to the session.
 
-Provider errors (timeout, unavailable, rate limited) leave the graph unchanged as domain errors and nothing is saved to the history; unexpected errors are wrapped in a generic pipeline error without internal details.
+Provider errors (timeout, unavailable, rate limited) leave the graph unchanged as domain errors and nothing is saved to the history; unexpected errors are wrapped in a generic pipeline error (`RAG_PIPELINE_ERROR`, 502) without internal details.
 
 ## Ask endpoint
 
@@ -133,9 +133,39 @@ Response body: `answer`, `status`, `sources`, `session_key` and `request_id`. Ea
 
 **Unknown product:** a `product_id` that is not in the index returns `404` with the code `PRODUCT_NOT_FOUND` (not `422`, because the request is well formed and the resource it names does not exist). The known IDs come from the index itself; matching ignores case.
 
-**Index not ready:** while indexing is running or has failed, `/api/v1/ask` (like every endpoint that needs the index) returns `503` with the code `INDEX_NOT_READY`. This check runs before the body is validated.
+**Check order:** the request body is validated first (`422`), then the index guard runs (`503 INDEX_NOT_READY`). A malformed request is wrong whatever the index state, so while indexing is running or has failed an invalid request still gets a `422` and a valid one gets the `503`.
 
-**Errors** use the body `{"detail", "code", "request_id"}`: `404` unknown product, `422` invalid input (FastAPI's standard validation body for now), `429` provider rate limit, `503` index not ready or provider unavailable, `504` provider timeout, `500` unexpected pipeline failure. `502` is documented for an invalid upstream response but no code path produces it yet.
+**Invalid vs unclear:** a technically invalid request (missing or wrong-typed field, malformed JSON, blank question, question longer than `MAX_QUESTION_LENGTH`, bad `session_key`, `top_k` out of range) is a `422`. A well-formed but unclear question (for example "My machine doesn't work.") is not an error: it returns `200` with `status: clarification_needed` and the clarifying question as `answer`. With a `session_key` the next question is interpreted together with the stored history.
+
+**Errors** always use the body `{"detail", "code", "request_id"}`; `detail` is a readable string and never contains a stack trace or internal exception text. A `422` adds `errors`, a list of `{"field", "message", "type"}` items; the submitted values are not echoed. Example:
+
+```json
+{
+  "detail": "Invalid request: question: String should have at least 1 character",
+  "code": "VALIDATION_ERROR",
+  "request_id": "3f2b8c1e9d7a4e6f",
+  "errors": [
+    {"field": "question", "message": "String should have at least 1 character", "type": "string_too_short"}
+  ]
+}
+```
+
+| Status | `code` | When |
+|---|---|---|
+| 404 | `PRODUCT_NOT_FOUND` | `product_id` is not in the index |
+| 404 / 405 / other | `NOT_FOUND`, `METHOD_NOT_ALLOWED`, ... | Unknown route, wrong method (same unified body) |
+| 422 | `VALIDATION_ERROR` | Invalid request body (see above) |
+| 502 | `LLM_UNAVAILABLE` | Provider unreachable or answering with a 5xx error |
+| 502 | `LLM_EMPTY_RESPONSE` | The model returned an empty answer |
+| 502 | `RAG_PIPELINE_ERROR` | Unexpected failure inside the question flow; generic message. It has its own code so a bug is not reported as the model being unreachable |
+| 503 | `INDEX_NOT_READY` | Indexing is running or failed |
+| 503 | `LLM_RATE_LIMITED` | Provider still rate limits after the bounded retries; carries a `Retry-After` header |
+| 504 | `LLM_TIMEOUT` | Provider did not answer within the timeout |
+| 500 | `INTERNAL_ERROR` | Any other unhandled exception; generic message |
+
+`Retry-After` is an integer number of seconds. It is taken from the provider's `Retry-After` header when that is a number; otherwise `RATE_LIMIT_RETRY_AFTER_SECONDS` (default 5) is used.
+
+**Logging:** every `4xx` is logged at WARNING with the error code, the affected field names (for `422`) and the `request_id`; the request body is not logged. Every `5xx` and every unexpected exception is logged at ERROR with the stack trace, in the log only. `clarification_needed` and `no_answer` are normal outcomes and are logged at INFO.
 
 **Request ID:** the `X-Request-ID` header is used when the client sends one, otherwise an ID is generated. It is returned in the `X-Request-ID` response header and in `request_id` of success and error bodies, and appears in the log lines of the request together with each source's product, section, chunk ID and score. The question is logged truncated to `LOG_QUESTION_MAX_CHARS`.
 
@@ -185,9 +215,9 @@ Which of this was run: the sample requests were sent to a running `uvicorn` with
 
 The chat model and the embeddings are chosen with `LLM_PROVIDER` (`azure`, `gemini` or `ollama`, default `ollama`) and `EMBEDDING_PROVIDER` (defaults to `LLM_PROVIDER`). A missing variable or an unknown value stops the application at startup with an error that names the variable; there is never a silent fallback. Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.
 
-For the cloud providers, vendor failures are translated into three domain errors: a timeout (`llm_timeout`, HTTP 504), an unreachable provider or a 5xx answer (`llm_unavailable`, 503) and rate limiting (`llm_rate_limited`, 429). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
+For the cloud providers, vendor failures are translated into three domain errors: a timeout (`LLM_TIMEOUT`, HTTP 504), an unreachable provider or a 5xx answer (`LLM_UNAVAILABLE`, 502) and rate limiting (`LLM_RATE_LIMITED`, 503 with a `Retry-After` header). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
 
-Ollama runs locally, so there are no rate limits and no retries. Its failures use the same domain errors (a timeout is `llm_timeout`, 504; an unreachable server or a model that is not pulled is `llm_unavailable`, 503), and the message names the base URL and, for a missing model, the `ollama pull <model>` command.
+Ollama runs locally, so there are no rate limits and no retries. Its failures use the same domain errors (a timeout is `LLM_TIMEOUT`, 504; an unreachable server or a model that is not pulled is `LLM_UNAVAILABLE`, 502), and the message names the base URL and, for a missing model, the `ollama pull <model>` command.
 
 ### Configure Azure OpenAI
 

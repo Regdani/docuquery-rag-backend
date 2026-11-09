@@ -37,7 +37,10 @@ class AskRequest(BaseModel):
     """A question about the product manuals."""
 
     question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = Field(
-        description="Natural-language question (whitespace is trimmed; blank is invalid).",
+        description=(
+            "Natural-language question (whitespace is trimmed; blank is invalid). "
+            "Longer than the server's MAX_QUESTION_LENGTH (default 1000 characters) is invalid."
+        ),
         examples=["How do I descale the KV-200 coffee maker?"],
     )
     session_key: Annotated[SessionKey | None, OptionalText] = Field(
@@ -114,19 +117,27 @@ class AskResponse(BaseModel):
     )
 
 
+class ValidationIssue(BaseModel):
+    """One problem found in the request (the submitted value is never echoed)."""
+
+    field: str = Field(description="Name of the offending field.", examples=["question"])
+    message: str = Field(
+        description="What is wrong.", examples=["String should have at least 1 character"]
+    )
+    type: str = Field(description="Validation error type.", examples=["string_too_short"])
+
+
 class ErrorResponse(BaseModel):
     """Unified error body."""
 
-    detail: Any = Field(
-        description="Human-readable message (a list of validation problems for 422).",
+    detail: str = Field(
+        description="Human-readable message.",
         examples=["The document index is still being built; retry shortly."],
     )
-    code: str | None = Field(
-        default=None, description="Machine-readable error code.", examples=["INDEX_NOT_READY"]
+    code: str = Field(description="Machine-readable error code.", examples=["INDEX_NOT_READY"])
+    request_id: str = Field(
+        description="Request ID for log correlation.", examples=["3f2b8c1e9d7a4e6f"]
     )
-    request_id: str | None = Field(
-        default=None, description="Request ID for log correlation.", examples=["3f2b8c1e9d7a4e6f"]
-    )
-    errors: list[dict[str, Any]] | None = Field(
+    errors: list[ValidationIssue] | None = Field(
         default=None, description="Validation problems (422 only)."
     )

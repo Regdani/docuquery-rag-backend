@@ -12,11 +12,10 @@ from langchain_core.messages import BaseMessage
 
 from app.api.deps import get_qa_service
 from app.core.config import Settings
-from app.core.errors import LLMRateLimitedError, LLMTimeoutError, LLMUnavailableError
 from app.main import create_app
 from app.rag.index_status import IndexStatus
 from app.services.qa_service import QAResult
-from tests.fakes import FlakyChatModel, RelevanceVectorStore, ScriptedChatModel
+from tests.fakes import RelevanceVectorStore, ScriptedChatModel
 
 ROOT = Path(__file__).resolve().parents[2]
 QUESTION = "How often should I descale the KV-200 coffee maker?"
@@ -192,28 +191,6 @@ def test_503_until_index_ready(client: TestClient, status: IndexStatus) -> None:
     assert resp.json()["code"] == "INDEX_NOT_READY"
 
 
-@pytest.mark.parametrize(
-    ("error", "status_code", "code"),
-    [
-        (LLMTimeoutError("timed out"), 504, "llm_timeout"),
-        (LLMUnavailableError("down"), 503, "llm_unavailable"),
-        (LLMRateLimitedError("slow down"), 429, "llm_rate_limited"),
-        (RuntimeError("secret internals"), 500, "rag_pipeline_error"),
-    ],
-)
-def test_model_errors_use_unified_body(
-    tmp_path: Path, error: Exception, status_code: int, code: str
-) -> None:
-    chat = FlakyChatModel(failures=[error], always=True)
-    with make_client(tmp_path, chat) as c:
-        wait_ready(c)
-        resp = ask(c)
-    assert resp.status_code == status_code
-    body = resp.json()
-    assert body["code"] == code and body["request_id"]
-    assert "secret internals" not in resp.text
-
-
 def test_request_id_header_body_and_logs(
     client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -283,7 +260,7 @@ def test_openapi_documents_ask(client: TestClient) -> None:
     assert "product_id" in examples["product_scoped"]["value"]
     ok = op["responses"]["200"]["content"]["application/json"]["examples"]
     assert {"answered", "clarification_needed", "no_answer"} <= set(ok)
-    assert {"404", "422", "429", "502", "503", "504"} <= set(op["responses"])
+    assert {"404", "422", "502", "503", "504"} <= set(op["responses"])
     assert "ErrorResponse" in str(op["responses"]["404"])
     fields = schema["components"]["schemas"]["AskRequest"]["properties"]
     assert all("description" in f and "examples" in f for f in fields.values())

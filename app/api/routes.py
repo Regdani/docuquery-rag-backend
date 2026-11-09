@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Request
 
-from app.api.deps import get_qa_service, require_index_ready
+from app.api.deps import get_qa_service, require_index_ready, validate_question_length
 from app.api.schemas import AskRequest, AskResponse, ErrorResponse, Source
 from app.services.qa_service import QAServiceProtocol
 
@@ -48,7 +48,10 @@ def _example(summary: str, value: dict[str, Any]) -> dict[str, Any]:
     return {"summary": summary, "value": value}
 
 
-def _error(code: str, detail: Any, request_id: str = "3f2b8c1e9d7a4e6f") -> dict[str, Any]:
+_RID = "3f2b8c1e9d7a4e6f"
+
+
+def _error(code: str, detail: Any, request_id: str = _RID) -> dict[str, Any]:
     return {"detail": detail, "code": code, "request_id": request_id}
 
 
@@ -111,35 +114,28 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     422: {
         "model": ErrorResponse,
-        "description": "Invalid request (blank question, top_k out of range, bad session_key).",
+        "description": (
+            "Invalid request: missing or wrong-typed field, malformed JSON, blank or too long "
+            "question, bad session_key, top_k out of range. Checked before the index state."
+        ),
         "content": {
             "application/json": {
                 "examples": {
                     "validation": _example(
                         "Blank question",
                         {
-                            "detail": [
+                            "detail": "Invalid request: question: "
+                            "String should have at least 1 character",
+                            "code": "VALIDATION_ERROR",
+                            "request_id": _RID,
+                            "errors": [
                                 {
+                                    "field": "question",
+                                    "message": "String should have at least 1 character",
                                     "type": "string_too_short",
-                                    "loc": ["body", "question"],
-                                    "msg": "String should have at least 1 character",
                                 }
-                            ]
+                            ],
                         },
-                    )
-                }
-            }
-        },
-    },
-    429: {
-        "model": ErrorResponse,
-        "description": "The model provider rate limited the request.",
-        "content": {
-            "application/json": {
-                "examples": {
-                    "rate_limited": _example(
-                        "Rate limited",
-                        _error("llm_rate_limited", "The model provider is rate limiting requests."),
                     )
                 }
             }
@@ -147,23 +143,35 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     502: {
         "model": ErrorResponse,
-        "description": "The model provider returned an invalid response.",
+        "description": "Provider unavailable, empty answer, or unexpected pipeline failure.",
         "content": {
             "application/json": {
                 "examples": {
-                    "bad_gateway": _example(
-                        "Bad upstream response",
-                        _error(
-                            "llm_bad_response", "The model provider returned an invalid response."
-                        ),
-                    )
+                    "llm_unavailable": _example(
+                        "Provider unreachable or failing",
+                        _error("LLM_UNAVAILABLE", "openai is unreachable (APIConnectionError)"),
+                    ),
+                    "llm_empty_response": _example(
+                        "Empty model answer",
+                        _error("LLM_EMPTY_RESPONSE", "The model returned an empty answer."),
+                    ),
+                    "rag_pipeline_error": _example(
+                        "Unexpected failure in the question flow",
+                        _error("RAG_PIPELINE_ERROR", "The question could not be processed."),
+                    ),
                 }
             }
         },
     },
     503: {
         "model": ErrorResponse,
-        "description": "The index is not ready, or the model provider is unavailable.",
+        "description": "The index is not ready, or the provider is still rate limiting.",
+        "headers": {
+            "Retry-After": {
+                "description": "Seconds to wait before retrying (LLM_RATE_LIMITED).",
+                "schema": {"type": "integer", "examples": [5]},
+            }
+        },
         "content": {
             "application/json": {
                 "examples": {
@@ -174,9 +182,9 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                             "The document index is still being built; retry shortly.",
                         ),
                     ),
-                    "llm_unavailable": _example(
-                        "Provider unreachable",
-                        _error("llm_unavailable", "The model provider is unavailable."),
+                    "llm_rate_limited": _example(
+                        "Rate limited after retries (Retry-After header set)",
+                        _error("LLM_RATE_LIMITED", "azure rate limit exceeded (RateLimitError)"),
                     ),
                 }
             }
@@ -190,7 +198,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                 "examples": {
                     "timeout": _example(
                         "Provider timeout",
-                        _error("llm_timeout", "The model provider did not answer in time."),
+                        _error("LLM_TIMEOUT", "azure request timed out (APITimeoutError)"),
                     )
                 }
             }
@@ -203,7 +211,6 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
     "/ask",
     response_model=AskResponse,
     summary="Ask a question about the product manuals",
-    dependencies=[Depends(require_index_ready)],
     responses=_RESPONSES,
 )
 async def ask(
@@ -212,6 +219,8 @@ async def ask(
     service: Annotated[QAServiceProtocol, Depends(get_qa_service)],
 ) -> AskResponse:
     """Answer a question from the manuals and return the chunks used as sources."""
+    validate_question_length(request, body.question)  # 422 before the index guard
+    require_index_ready(request)
     request_id: str = request.state.request_id
     result = await service.ask(
         body.question,

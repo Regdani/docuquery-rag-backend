@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from app.core.errors import ProductNotFoundError
+from app.core.errors import LLMEmptyResponseError, ProductNotFoundError
 from app.rag.index_status import IndexStatus
 from app.rag.state import GraphState, Source
 
@@ -73,6 +73,10 @@ class QAService:
         }
         out = await self._graph.ainvoke(state)
         status = str(out["status"])
+        answer = str(out["answer"])
+        if status == "answered" and not answer.strip():
+            logger.error("ask request_id=%s model returned an empty answer", request_id)
+            raise LLMEmptyResponseError()
         sources: list[Source] = list(out.get("sources", [])) if status == "answered" else []
         logger.info(
             "ask request_id=%s status=%s question=%r sources=%d",
@@ -92,6 +96,4 @@ class QAService:
                 s["chunk_id"],
                 s["score"],
             )
-        return QAResult(
-            answer=str(out["answer"]), status=status, sources=sources, session_key=session_key
-        )
+        return QAResult(answer=answer, status=status, sources=sources, session_key=session_key)

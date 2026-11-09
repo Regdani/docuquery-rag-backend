@@ -1,6 +1,7 @@
 """FastAPI dependencies that read shared objects from `app.state`."""
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 
 from app.core.errors import IndexNotReadyError
 from app.memory.store import InMemorySessionStore
@@ -22,6 +23,21 @@ def require_index_ready(request: Request) -> IndexStatus:
     if status.state == "indexing":
         raise IndexNotReadyError("The document index is still being built; retry shortly.")
     raise IndexNotReadyError(f"The document index is unavailable: {status.error}")
+
+
+def validate_question_length(request: Request, question: str) -> None:
+    """Raise a 422 when the question is longer than `Settings.max_question_length`."""
+    limit: int = request.app.state.settings.max_question_length
+    if len(question) > limit:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "string_too_long",
+                    "loc": ("body", "question"),
+                    "msg": f"String should have at most {limit} characters",
+                }
+            ]
+        )
 
 
 def get_store(request: Request) -> InMemorySessionStore:

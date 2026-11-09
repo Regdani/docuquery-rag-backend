@@ -59,9 +59,9 @@ def test_error_classes_have_distinct_codes_and_statuses() -> None:
     errors = [LLMTimeoutError("a"), LLMUnavailableError("b"), LLMRateLimitedError("c")]
     assert all(isinstance(e, ServiceError) for e in errors)
     assert [(e.code, e.status_code) for e in errors] == [
-        ("llm_timeout", 504),
-        ("llm_unavailable", 503),
-        ("llm_rate_limited", 429),
+        ("LLM_TIMEOUT", 504),
+        ("LLM_UNAVAILABLE", 502),
+        ("LLM_RATE_LIMITED", 503),
     ]
 
 
@@ -189,3 +189,28 @@ def test_secret_not_in_logs_or_errors(caplog: pytest.LogCaptureFixture) -> None:
     assert not any(SECRET in m for m in messages)
     assert SECRET not in caplog.text
     assert any("rate limited" in r.message for r in caplog.records)
+
+
+def test_retry_after_header_is_carried_into_rate_limit_error() -> None:
+    exc = openai.RateLimitError(
+        "slow",
+        response=httpx.Response(429, request=REQ, headers={"Retry-After": "7"}),
+        body=None,
+    )
+    wrapper, _ = chat([exc], retries=0)
+    with pytest.raises(LLMRateLimitedError) as info:
+        wrapper.invoke("hi")
+    assert info.value.headers == {"Retry-After": "7"}
+
+
+def test_missing_or_bad_retry_after_leaves_headers_empty() -> None:
+    bad = openai.RateLimitError(
+        "slow",
+        response=httpx.Response(429, request=REQ, headers={"Retry-After": "Wed, 21 Oct"}),
+        body=None,
+    )
+    for exc in (openai_status(openai.RateLimitError, 429), bad):
+        wrapper, _ = chat([exc], retries=0)
+        with pytest.raises(LLMRateLimitedError) as info:
+            wrapper.invoke("hi")
+        assert info.value.headers is None

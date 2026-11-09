@@ -44,9 +44,23 @@ def _vendor_types(module: str, names: Sequence[str]) -> tuple[type[BaseException
     return tuple(getattr(mod, n) for n in names if hasattr(mod, n))
 
 
-def _from_status(provider: str, status: int, name: str) -> ServiceError | None:
+def _retry_after(exc: BaseException) -> float | None:
+    """Seconds from the provider's Retry-After header (numeric form only), if present."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    try:
+        value = headers.get("retry-after") if headers is not None else None
+        seconds = float(value) if value is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return seconds if seconds is not None and seconds >= 0 else None
+
+
+def _from_status(
+    provider: str, status: int, name: str, exc: BaseException | None = None
+) -> ServiceError | None:
     if status == 429:
-        return LLMRateLimitedError(f"{provider} rate limit exceeded ({name})")
+        retry_after = _retry_after(exc) if exc is not None else None
+        return LLMRateLimitedError(f"{provider} rate limit exceeded ({name})", retry_after)
     if status in (408, 504):
         return LLMTimeoutError(f"{provider} request timed out ({name})")
     if status >= 500:
@@ -73,7 +87,7 @@ def translate_error(provider: str, exc: BaseException) -> ServiceError | None:
     if status_types and isinstance(exc, status_types):
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
         if isinstance(status, int):
-            return _from_status(provider, status, name)
+            return _from_status(provider, status, name, exc)
         return None
 
     # Transport level (Gemini uses httpx; also builtin timeouts and connection errors)

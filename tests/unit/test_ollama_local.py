@@ -172,9 +172,9 @@ def test_ingest_cli_reports_ollama_failure(
 @pytest.mark.parametrize(
     ("failure", "error_cls", "code", "status"),
     [
-        (ConnectionError("refused"), LLMUnavailableError, "llm_unavailable", 503),
-        (NOT_FOUND, LLMUnavailableError, "llm_unavailable", 503),
-        (httpx.ReadTimeout("slow"), LLMTimeoutError, "llm_timeout", 504),
+        (ConnectionError("refused"), LLMUnavailableError, "LLM_UNAVAILABLE", 502),
+        (NOT_FOUND, LLMUnavailableError, "LLM_UNAVAILABLE", 502),
+        (httpx.ReadTimeout("slow"), LLMTimeoutError, "LLM_TIMEOUT", 504),
     ],
 )
 def test_chat_failures_map_to_domain_errors(
