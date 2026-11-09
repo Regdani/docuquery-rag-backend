@@ -18,7 +18,13 @@ from app.core.errors import (
 from app.memory.store import InMemorySessionStore
 from app.rag.graph import NODE_NAMES, build_graph
 from app.rag.prompts import NO_ANSWER_TEXT
-from tests.fakes import FlakyChatModel, FlakyEmbeddings, RelevanceVectorStore, ScriptedChatModel
+from tests.fakes import (
+    EmptyRetrievalVectorStore,
+    FlakyChatModel,
+    FlakyEmbeddings,
+    RelevanceVectorStore,
+    ScriptedChatModel,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 QUESTION = "What is the noise level of the AP-120?"
@@ -163,6 +169,18 @@ async def test_unparsable_assess_defaults_to_clear(raw: str) -> None:
 async def test_no_relevant_hit_skips_generation() -> None:
     graph, model, vs, _ = make()
     out = await graph.ainvoke({"question": "completely different topic"})
+    assert out["status"] == "no_answer"
+    assert out["answer"] == NO_ANSWER_TEXT
+    assert out["sources"] == []
+    assert vs.queries
+    assert model.calls_with("Use ONLY the context") == []
+
+
+async def test_empty_retrieval_skips_generation() -> None:
+    vs = EmptyRetrievalVectorStore(DeterministicFakeEmbedding(size=64))
+    model = scripted()
+    graph = build_graph(model, vs, InMemorySessionStore(5), Settings())
+    out = await graph.ainvoke({"question": QUESTION})
     assert out["status"] == "no_answer"
     assert out["answer"] == NO_ANSWER_TEXT
     assert out["sources"] == []

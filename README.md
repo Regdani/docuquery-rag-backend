@@ -370,10 +370,28 @@ GOOGLE_API_KEY=<key>
 
 Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001` (names checked with the provider factory). The old collection stays in `INDEX_DIR` unused.
 
-### Integration tests
+## Testing
 
 ```bash
-uv run pytest -m integration
+uv sync                               # install dependencies
+uv run pytest -m "not integration"    # offline suite
+uv run pytest -m integration          # integration suite
+uv run ruff check .                   # lint
+uv run ruff format --check .          # format check
+uv run mypy app                       # type check
 ```
 
-The Azure and Gemini tests make one real chat call and one embedding call. They are skipped (not failed) when the credentials are not set. The Ollama tests are skipped when the server is unreachable or a model is not pulled (see "Configure Ollama").
+**Offline suite.** It needs no `.env`, no API keys, no Ollama and no network: all model, embedding and vector store calls use test doubles from `tests/fakes.py`, and an autouse fixture in `tests/conftest.py` makes any non-local socket connection fail (local connections stay allowed, so the HTTP test client works). The doubles exist only under `tests/`; `app/` contains real implementations only. It covers these paths, both at graph level (`tests/unit/test_graph.py`) and at HTTP level (`tests/api/`):
+
+- success with sources;
+- invalid input (422 in the unified error body);
+- no relevant hits, both when every score is below the threshold and when retrieval returns zero documents (status `no_answer`, no generation call, empty sources);
+- model error, rate limit and model timeout (502, 503, 504 with `code` and `request_id`);
+- embedding failure or timeout during retrieval.
+
+**Integration suite.** It makes real calls to Azure OpenAI, Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Configure Ollama" for the local setup).
+
+**CI.** `.github/workflows/ci.yml` runs lint, format check, type check and the offline suite on every push and pull request with Python 3.12 and no secrets. The workflow has not been executed on GitHub yet; only its YAML syntax was checked locally.
+
+Which commands were run: the offline suite (with the Azure and Gemini variables unset and no `.env`), the integration suite (all tests skipped), lint, format check and type check were all run and passed. `uv sync` was not re-run for this section.
+

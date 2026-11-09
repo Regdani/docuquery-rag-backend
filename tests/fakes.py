@@ -13,7 +13,9 @@ __all__ = [
     "DeterministicFakeEmbedding",
     "FakeListChatModel",
     "FlakyChatModel",
+    "FailingQueryEmbeddings",
     "FlakyEmbeddings",
+    "EmptyRetrievalVectorStore",
     "InMemoryVectorStore",
     "RelevanceVectorStore",
     "ScriptedChatModel",
@@ -115,3 +117,24 @@ class RelevanceVectorStore(InMemoryVectorStore):
         elif flt is not None:
             kwargs["filter"] = flt
         return super().similarity_search_with_score(query, k=k, **kwargs)
+
+
+class EmptyRetrievalVectorStore(RelevanceVectorStore):
+    """Store whose search always returns zero documents (not just low scores)."""
+
+    def similarity_search_with_score(self, query: str, k: int = 4, **kwargs: Any) -> Any:
+        self.queries.append(query)
+        return []
+
+
+class FailingQueryEmbeddings(Embeddings):
+    """Embeds documents normally but raises `error` for every query embedding."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        raise self.error

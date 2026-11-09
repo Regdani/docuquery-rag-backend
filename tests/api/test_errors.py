@@ -9,13 +9,21 @@ import httpx
 import openai
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.embeddings import DeterministicFakeEmbedding
 
 from app.api.deps import get_qa_service
+from app.core.config import Settings
 from app.core.errors import LLMRateLimitedError, LLMTimeoutError, LLMUnavailableError
+from app.main import create_app
 from app.providers.resilience import ResilientChatModel
 from app.rag.index_status import IndexStatus
 from tests.api.test_ask import QUESTION, make_client, scripted, wait_ready
-from tests.fakes import FlakyChatModel
+from tests.fakes import (
+    EmptyRetrievalVectorStore,
+    FailingQueryEmbeddings,
+    FlakyChatModel,
+    RelevanceVectorStore,
+)
 
 URL = "/api/v1/ask"
 SECRET = "secret internals"
@@ -349,3 +357,53 @@ def test_openapi_documents_error_responses(client: TestClient) -> None:
     props = schema["components"]["schemas"]["ErrorResponse"]["properties"]
     assert {"detail", "code", "request_id", "errors"} <= set(props)
     assert not re.search(r"\bT\d{2}\b|#\d+", str(schema))
+
+
+# --- empty retrieval and embedding failures --------------------------------------------------
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def sample_settings(tmp_path: Path) -> Settings:
+    return Settings(data_dir=str(ROOT / "data" / "sample"), index_dir=str(tmp_path / "index"))
+
+
+def test_empty_retrieval_is_no_answer_without_generation(tmp_path: Path) -> None:
+    chat = scripted()
+    emb = DeterministicFakeEmbedding(size=64)
+    app = create_app(
+        sample_settings(tmp_path),
+        chat_model=chat,
+        embeddings=emb,
+        vector_store=EmptyRetrievalVectorStore(emb),
+    )
+    with TestClient(app) as c:
+        wait_ready(c)
+        resp = c.post(URL, json={"question": QUESTION})
+    body = resp.json()
+    assert resp.status_code == 200 and body["status"] == "no_answer"
+    assert body["answer"] and body["sources"] == []
+    assert chat.calls_with("Use ONLY the context") == []
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (LLMTimeoutError("embed timeout"), 504, "LLM_TIMEOUT"),
+        (LLMUnavailableError("embed down"), 502, "LLM_UNAVAILABLE"),
+    ],
+)
+def test_embedding_failure_on_ask_is_unified_error(
+    tmp_path: Path, error: Exception, status: int, code: str
+) -> None:
+    emb = FailingQueryEmbeddings(error)
+    app = create_app(
+        sample_settings(tmp_path),
+        chat_model=scripted(),
+        embeddings=emb,
+        vector_store=RelevanceVectorStore(emb),
+    )
+    with TestClient(app) as c:
+        wait_ready(c)
+        resp = c.post(URL, json={"question": QUESTION})
+    assert_unified(resp, status, code)
