@@ -287,6 +287,8 @@ def test_4xx_logged_as_warning_with_code_field_and_request_id(
         client.post(URL, json={"question": "x"}, headers={"X-Request-ID": "log-503"})
     by_id: dict[str, logging.LogRecord] = {}
     for rec in caplog.records:
+        if rec.getMessage().startswith("request method="):  # access line, not the error line
+            continue
         for rid in ("log-422", "log-404", "log-p", "log-503"):
             if f"request_id={rid}" in rec.getMessage():
                 by_id[rid] = rec

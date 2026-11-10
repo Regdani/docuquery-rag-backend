@@ -1,7 +1,7 @@
 """Application settings loaded from environment variables and an optional `.env` file."""
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     )
 
     # Logging
-    log_level: str = "INFO"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_question_max_chars: int = Field(default=80, ge=0)
 
     @field_validator("llm_provider", "embedding_provider", mode="before")
@@ -95,6 +95,11 @@ class Settings(BaseSettings):
             if not value:
                 return None if info.field_name == "embedding_provider" else "ollama"
         return value
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, value: Any) -> Any:
+        return value.strip().upper() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _default_embedding_provider(self) -> "Settings":

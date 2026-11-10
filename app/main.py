@@ -15,6 +15,7 @@ from app.api.handlers import register_exception_handlers
 from app.api.health import router as health_router
 from app.api.routes import router
 from app.core.config import Settings, get_settings
+from app.core.logging import configure_logging
 from app.memory.store import get_session_store
 from app.providers.factory import (
     client_name,
@@ -49,6 +50,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        configure_logging(resolved.log_level)
         chat = chat_model or create_chat_model(resolved)
         logger.info("LLM_PROVIDER=%s client=%s", resolved.llm_provider, client_name(chat))
         emb = embeddings or create_embeddings(resolved)

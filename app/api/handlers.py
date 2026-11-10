@@ -5,6 +5,7 @@ ERROR with the stack trace; the response never contains a trace or exception tex
 """
 
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
@@ -81,8 +82,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         request.state.request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        started = time.perf_counter()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
+        path = request.url.path
+        # Health probes run every few seconds; keep them out of the INFO log.
+        level = logging.DEBUG if path.startswith("/health") else logging.INFO
+        logger.log(
+            level,
+            "request method=%s path=%s status=%d duration_ms=%.1f request_id=%s",
+            request.method,
+            path,
+            response.status_code,
+            (time.perf_counter() - started) * 1000,
+            request.state.request_id,
+        )
         return response
 
     @app.exception_handler(ServiceError)
