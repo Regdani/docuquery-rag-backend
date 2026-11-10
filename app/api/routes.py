@@ -151,7 +151,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                 "examples": {
                     "llm_unavailable": _example(
                         "Provider unreachable or failing",
-                        _error("LLM_UNAVAILABLE", "openai is unreachable (APIConnectionError)"),
+                        _error("LLM_UNAVAILABLE", "gemini is unreachable (ConnectError)"),
                     ),
                     "llm_empty_response": _example(
                         "Empty model answer",
@@ -186,7 +186,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                     ),
                     "llm_rate_limited": _example(
                         "Rate limited after retries (Retry-After header set)",
-                        _error("LLM_RATE_LIMITED", "azure rate limit exceeded (RateLimitError)"),
+                        _error("LLM_RATE_LIMITED", "gemini rate limit exceeded (ClientError)"),
                     ),
                 }
             }
@@ -200,7 +200,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                 "examples": {
                     "timeout": _example(
                         "Provider timeout",
-                        _error("LLM_TIMEOUT", "azure request timed out (APITimeoutError)"),
+                        _error("LLM_TIMEOUT", "gemini request timed out (ReadTimeout)"),
                     )
                 }
             }

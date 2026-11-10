@@ -20,18 +20,9 @@ class Settings(BaseSettings):
 
     # Provider selection: all three are required; the factory raises ProviderConfigError
     # naming the variable when one is missing. There are no defaults or fallbacks.
-    llm_provider: str | None = Field(default=None, description="azure | gemini | ollama")
-    embedding_provider: str | None = Field(default=None, description="azure | gemini | ollama")
-    embedding_model: str = Field(
-        default="",
-        description="Embedding model of EMBEDDING_PROVIDER (the deployment name on Azure).",
-    )
-
-    # Azure OpenAI
-    azure_openai_api_key: str = ""
-    azure_openai_endpoint: str = ""
-    azure_openai_api_version: str = "2024-10-21"
-    azure_openai_chat_deployment: str = ""
+    llm_provider: str | None = Field(default=None, description="gemini | ollama")
+    embedding_provider: str | None = Field(default=None, description="gemini | ollama")
+    embedding_model: str = Field(default="", description="Embedding model of EMBEDDING_PROVIDER.")
 
     # Google Gemini
     google_api_key: str = ""

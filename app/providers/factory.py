@@ -10,7 +10,6 @@ from collections.abc import Callable, Sequence
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
-from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.core.errors import ProviderConfigError
@@ -22,7 +21,7 @@ from app.providers.resilience import (
     unwrap,
 )
 
-SUPPORTED_PROVIDERS = ("azure", "gemini", "ollama")
+SUPPORTED_PROVIDERS = ("gemini", "ollama")
 
 
 def _require(settings: Settings, provider: str, fields: Sequence[str]) -> None:
@@ -49,26 +48,6 @@ def _unknown(kind: str, value: str | None) -> ProviderConfigError:
 
 
 # --- chat models ---
-
-
-def _create_azure_chat(settings: Settings) -> BaseChatModel:
-    _require(
-        settings,
-        "azure",
-        ["azure_openai_api_key", "azure_openai_endpoint", "azure_openai_chat_deployment"],
-    )
-    try:
-        from langchain_openai import AzureChatOpenAI
-    except ImportError as exc:
-        raise _import_error("azure", "langchain-openai", exc) from exc
-    return AzureChatOpenAI(
-        azure_deployment=settings.azure_openai_chat_deployment,
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
-        api_version=settings.azure_openai_api_version,
-        timeout=settings.llm_timeout_seconds,
-        max_retries=settings.max_retries,
-    )
 
 
 def _create_gemini_chat(settings: Settings) -> BaseChatModel:
@@ -101,26 +80,6 @@ def _create_ollama_chat(settings: Settings) -> BaseChatModel:
 # --- embeddings ---
 
 
-def _create_azure_embeddings(settings: Settings) -> Embeddings:
-    _require(
-        settings,
-        "azure",
-        ["azure_openai_api_key", "azure_openai_endpoint", "embedding_model"],
-    )
-    try:
-        from langchain_openai import AzureOpenAIEmbeddings
-    except ImportError as exc:
-        raise _import_error("azure", "langchain-openai", exc) from exc
-    return AzureOpenAIEmbeddings(
-        deployment=settings.embedding_model,
-        azure_endpoint=settings.azure_openai_endpoint,
-        openai_api_key=SecretStr(settings.azure_openai_api_key),
-        openai_api_version=settings.azure_openai_api_version,
-        request_timeout=settings.embedding_timeout_seconds,
-        max_retries=settings.max_retries,
-    )
-
-
 def _create_gemini_embeddings(settings: Settings) -> Embeddings:
     _require(settings, "gemini", ["google_api_key", "embedding_model"])
     try:
@@ -149,14 +108,12 @@ def _create_ollama_embeddings(settings: Settings) -> Embeddings:
 
 
 # Cloud providers get error translation and bounded 429 retry; ollama gets translation only.
-_CLOUD = frozenset({"azure", "gemini"})
+_CLOUD = frozenset({"gemini"})
 _CHAT: dict[str, Callable[[Settings], BaseChatModel]] = {
-    "azure": _create_azure_chat,
     "gemini": _create_gemini_chat,
     "ollama": _create_ollama_chat,
 }
 _EMBEDDINGS: dict[str, Callable[[Settings], Embeddings]] = {
-    "azure": _create_azure_embeddings,
     "gemini": _create_gemini_embeddings,
     "ollama": _create_ollama_embeddings,
 }

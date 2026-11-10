@@ -237,35 +237,19 @@ Three variables choose the models, and all three are required:
 
 | Variable | Values | Meaning |
 |---|---|---|
-| `LLM_PROVIDER` | `azure`, `gemini`, `ollama` | Provider of the chat model |
-| `EMBEDDING_PROVIDER` | `azure`, `gemini`, `ollama` | Provider of the embeddings, chosen independently of `LLM_PROVIDER` |
-| `EMBEDDING_MODEL` | model name | Embedding model of `EMBEDDING_PROVIDER`: `nomic-embed-text` (Ollama), `gemini-embedding-001` (Gemini) or the embedding deployment name (Azure) |
+| `LLM_PROVIDER` | `gemini`, `ollama` | Provider of the chat model |
+| `EMBEDDING_PROVIDER` | `gemini`, `ollama` | Provider of the embeddings, chosen independently of `LLM_PROVIDER` |
+| `EMBEDDING_MODEL` | model name | Embedding model of `EMBEDDING_PROVIDER`: `gemini-embedding-001` (Gemini) or `nomic-embed-text` (Ollama) |
 
-There are no defaults and no fallbacks: the embeddings never follow `LLM_PROVIDER`, and a missing or unknown value stops the application (and the ingest command) at startup with an error that names the variable. Because chat and embeddings are always configured separately, a mixed setup changes only these lines. The chat model names stay provider-specific (`AZURE_OPENAI_CHAT_DEPLOYMENT`, `GEMINI_CHAT_MODEL`, `OLLAMA_CHAT_MODEL`). Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.
+There are no defaults and no fallbacks: the embeddings never follow `LLM_PROVIDER`, and a missing or unknown value stops the application (and the ingest command) at startup with an error that names the variable. Because chat and embeddings are always configured separately, a mixed setup changes only these lines. The chat model names stay provider-specific (`GEMINI_CHAT_MODEL`, `OLLAMA_CHAT_MODEL`). Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.
 
-For the cloud providers, vendor failures are translated into three domain errors: a timeout (`LLM_TIMEOUT`, HTTP 504), an unreachable provider or a 5xx answer (`LLM_UNAVAILABLE`, 502) and rate limiting (`LLM_RATE_LIMITED`, 503 with a `Retry-After` header). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
+For Gemini, vendor failures are translated into three domain errors: a timeout (`LLM_TIMEOUT`, HTTP 504), an unreachable provider or a 5xx answer (`LLM_UNAVAILABLE`, 502) and rate limiting (`LLM_RATE_LIMITED`, 503 with a `Retry-After` header). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
 
 Ollama runs locally, so there are no rate limits and no retries. Its failures use the same domain errors (a timeout is `LLM_TIMEOUT`, 504; an unreachable server or a model that is not pulled is `LLM_UNAVAILABLE`, 502), and the message names the base URL and, for a missing model, the `ollama pull <model>` command.
 
-### Configure Azure OpenAI
+### Configure Google Gemini (primary cloud mode)
 
-Azure OpenAI is the primary, production-like mode: a managed service with a stable API, predictable quotas and enterprise data-handling terms. Create a chat deployment and an embedding deployment in your Azure OpenAI resource, then set:
-
-```env
-LLM_PROVIDER=azure
-EMBEDDING_PROVIDER=azure
-EMBEDDING_MODEL=<embedding deployment name>
-AZURE_OPENAI_API_KEY=<key>
-AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
-AZURE_OPENAI_API_VERSION=2024-10-21
-AZURE_OPENAI_CHAT_DEPLOYMENT=<chat deployment name>
-```
-
-`AZURE_OPENAI_API_VERSION` has a default and may be omitted. The deployment names are the names you gave the deployments, not the model names.
-
-### Configure Google Gemini
-
-Gemini is the cloud mode that can be tried for free: create an API key in Google AI Studio and set:
+Gemini is the primary model: a managed API with stronger answers than a small local model, no hardware to run, and one key for both the chat model and the embeddings. The same key works on the free tier for trying the project and on the paid tier, which lifts the rate limits for real traffic. Create an API key in Google AI Studio and set:
 
 ```env
 LLM_PROVIDER=gemini
@@ -376,7 +360,7 @@ The `Dockerfile` builds a `python:3.12-slim` image that installs the locked depe
 
 - `app`: the API with Ollama as its provider (local mode); `OLLAMA_BASE_URL` is set to `http://ollama:11434` by compose, overriding `.env`. As the local-mode service it fills in `LLM_PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama` and `EMBEDDING_MODEL=nomic-embed-text` when `.env` does not set them, so it starts without a `.env`; values from `.env` take precedence.
 - `ollama`: the Ollama server (`ollama/ollama`), with the models stored in the named volume `ollama`.
-- `app-cloud`: the same image without Ollama, in the `cloud` profile, for Azure OpenAI or Gemini.
+- `app-cloud`: the same image without Ollama, in the `cloud` profile, for Gemini.
 
 The index lives in the named volume `index` (mounted at `INDEX_DIR=/app/data/index`), so it survives restarts and is shared by the `app` and the ingest command. A `.env` file is optional; copy `.env.example` to `.env` to change settings. The health check of the API container calls `GET /health`.
 
@@ -394,7 +378,7 @@ curl -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application/js
 
 Pull both models before the ingest step and before the first question: without them the startup indexing fails (the API still starts and `/health` answers 200, but `/health/ready` reports `503` and `/api/v1/ask` returns `503`). The pulls are a one-time download of about 2 GB (`llama3.2:3b`) and 270 MB (`nomic-embed-text`) into the `ollama` volume; plan for about 8 GB of RAM and several GB of free disk for the images and models (see the hardware notes above). The app also indexes at startup, so the ingest command only pre-builds the index in the shared volume; the restart makes a running app pick it up. To use an NVIDIA GPU, add a `deploy.resources.reservations.devices` entry to the `ollama` service (requires the NVIDIA Container Toolkit); this is optional and not configured here.
 
-### Cloud mode (Azure OpenAI or Gemini)
+### Cloud mode (Gemini)
 
 Set the three provider variables and the keys in `.env` (names in `.env.example`), for example:
 
@@ -405,7 +389,7 @@ EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_API_KEY=<key>
 ```
 
-or the Azure equivalent with the `AZURE_OPENAI_*` variables, then start only the cloud service. `app-cloud` has no provider defaults, so a missing variable stops it at startup:
+then start only the cloud service. `app-cloud` has no provider defaults, so a missing variable stops it at startup:
 
 ```bash
 docker compose --profile cloud up --build -d app-cloud
@@ -433,7 +417,7 @@ uv run mypy app                       # type check
 - model error, rate limit and model timeout (502, 503, 504 with `code` and `request_id`);
 - embedding failure or timeout during retrieval.
 
-**Integration suite.** It makes real calls to Azure OpenAI, Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Configure Ollama" for the local setup).
+**Integration suite.** It makes real calls to Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Configure Ollama" for the local setup).
 
 **CI.** `.github/workflows/ci.yml` runs lint, format check, type check and the offline suite on every push and pull request with Python 3.12 and no secrets.
 

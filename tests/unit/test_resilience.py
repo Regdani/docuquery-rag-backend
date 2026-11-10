@@ -2,7 +2,6 @@ import logging
 from typing import Any
 
 import httpx
-import openai
 import pytest
 from google.genai import errors as genai_errors
 
@@ -22,21 +21,14 @@ SECRET = "sk-SECRET-0123456789"
 REQ = httpx.Request("POST", "https://example.test/v1")
 
 
-def openai_status(cls: type[openai.APIStatusError], status: int) -> openai.APIStatusError:
-    return cls(f"boom {SECRET}", response=httpx.Response(status, request=REQ), body=None)
-
-
-def gemini_status(status: int) -> genai_errors.APIError:
-    return genai_errors.APIError(status, {"error": {"message": f"boom {SECRET}"}})
+def gemini_status(status: int, headers: dict[str, str] | None = None) -> genai_errors.APIError:
+    response = httpx.Response(status, request=REQ, headers=headers)
+    return genai_errors.APIError(status, {"error": {"message": f"boom {SECRET}"}}, response)
 
 
 FAILURES: list[tuple[str, Any, type[ServiceError]]] = [
-    ("openai-timeout", openai.APITimeoutError(request=REQ), LLMTimeoutError),
-    ("openai-conn", openai.APIConnectionError(request=REQ), LLMUnavailableError),
-    ("openai-429", openai_status(openai.RateLimitError, 429), LLMRateLimitedError),
-    ("openai-500", openai_status(openai.InternalServerError, 500), LLMUnavailableError),
-    ("openai-503", openai_status(openai.InternalServerError, 503), LLMUnavailableError),
     ("gemini-429", gemini_status(429), LLMRateLimitedError),
+    ("gemini-500", gemini_status(500), LLMUnavailableError),
     ("gemini-503", gemini_status(503), LLMUnavailableError),
     ("gemini-504", gemini_status(504), LLMTimeoutError),
     ("httpx-timeout", httpx.ReadTimeout("slow", request=REQ), LLMTimeoutError),
@@ -50,7 +42,7 @@ IDS = [f[0] for f in FAILURES]
 def chat(failures: list[Any], retries: int = 2, always: bool = False) -> tuple[Any, Any]:
     inner = FlakyChatModel(failures=failures, always=always)
     wrapper = ResilientChatModel(
-        inner=inner, provider="azure", rate_limit_retries=retries, backoff_seconds=0.0
+        inner=inner, provider="gemini", rate_limit_retries=retries, backoff_seconds=0.0
     )
     return wrapper, inner
 
@@ -83,9 +75,7 @@ def test_embedding_failures_translated(name: str, exc: Any, expected: type[Servi
         emb.embed_documents(["d"])
 
 
-@pytest.mark.parametrize(
-    "exc", [ValueError("bug"), KeyError("k"), openai_status(openai.BadRequestError, 400)]
-)
+@pytest.mark.parametrize("exc", [ValueError("bug"), KeyError("k"), gemini_status(400)])
 def test_unknown_errors_not_swallowed(exc: Exception) -> None:
     wrapper, _ = chat([exc])
     with pytest.raises(type(exc)):
@@ -96,27 +86,27 @@ def test_unknown_errors_not_swallowed(exc: Exception) -> None:
 
 
 def test_rate_limit_retries_are_bounded() -> None:
-    wrapper, inner = chat([openai_status(openai.RateLimitError, 429)], retries=3, always=True)
+    wrapper, inner = chat([gemini_status(429)], retries=3, always=True)
     with pytest.raises(LLMRateLimitedError):
         wrapper.invoke("hi")
     assert inner.calls == 4  # one attempt + at most max_retries retries
 
 
 def test_rate_limit_then_success() -> None:
-    wrapper, inner = chat([openai_status(openai.RateLimitError, 429)])
+    wrapper, inner = chat([gemini_status(429)])
     assert wrapper.invoke("hi").content == "ok"
     assert inner.calls == 2
 
 
 def test_other_failures_are_not_retried() -> None:
-    wrapper, inner = chat([openai.APIConnectionError(request=REQ)], always=True)
+    wrapper, inner = chat([httpx.ConnectError("down", request=REQ)], always=True)
     with pytest.raises(LLMUnavailableError):
         wrapper.invoke("hi")
     assert inner.calls == 1
 
 
 async def test_async_chat_translation_and_retry() -> None:
-    wrapper, inner = chat([openai_status(openai.RateLimitError, 429)])
+    wrapper, inner = chat([gemini_status(429)])
     assert (await wrapper.ainvoke("hi")).content == "ok"
     wrapper, inner = chat([gemini_status(429)], retries=1, always=True)
     with pytest.raises(LLMRateLimitedError):
@@ -182,7 +172,7 @@ def test_secret_not_in_logs_or_errors(caplog: pytest.LogCaptureFixture) -> None:
         messages.append(str(info.value))
     configs = [
         Settings(_env_file=None, llm_provider="gemini"),  # type: ignore[call-arg]
-        Settings(_env_file=None, llm_provider="azure", azure_openai_api_key=SECRET),  # type: ignore[call-arg]
+        Settings(_env_file=None, llm_provider="nope", google_api_key=SECRET),  # type: ignore[call-arg]
     ]
     for s in configs:
         with pytest.raises(ProviderConfigError) as cfg:
@@ -194,11 +184,7 @@ def test_secret_not_in_logs_or_errors(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def test_retry_after_header_is_carried_into_rate_limit_error() -> None:
-    exc = openai.RateLimitError(
-        "slow",
-        response=httpx.Response(429, request=REQ, headers={"Retry-After": "7"}),
-        body=None,
-    )
+    exc = gemini_status(429, headers={"Retry-After": "7"})
     wrapper, _ = chat([exc], retries=0)
     with pytest.raises(LLMRateLimitedError) as info:
         wrapper.invoke("hi")
@@ -206,12 +192,8 @@ def test_retry_after_header_is_carried_into_rate_limit_error() -> None:
 
 
 def test_missing_or_bad_retry_after_leaves_headers_empty() -> None:
-    bad = openai.RateLimitError(
-        "slow",
-        response=httpx.Response(429, request=REQ, headers={"Retry-After": "Wed, 21 Oct"}),
-        body=None,
-    )
-    for exc in (openai_status(openai.RateLimitError, 429), bad):
+    bad = gemini_status(429, headers={"Retry-After": "Wed, 21 Oct"})
+    for exc in (gemini_status(429), bad):
         wrapper, _ = chat([exc], retries=0)
         with pytest.raises(LLMRateLimitedError) as info:
             wrapper.invoke("hi")

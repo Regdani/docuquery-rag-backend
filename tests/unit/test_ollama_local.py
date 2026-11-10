@@ -40,9 +40,6 @@ ENV_VARS = (
     "EMBEDDING_PROVIDER",
     "EMBEDDING_MODEL",
     "GOOGLE_API_KEY",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_CHAT_DEPLOYMENT",
     "OLLAMA_BASE_URL",
 )
 
@@ -70,9 +67,8 @@ def use_embeddings(monkeypatch: pytest.MonkeyPatch, embeddings: Any) -> None:
     ("llm", "emb", "chat_cls", "emb_cls"),
     [
         ("ollama", "ollama", "ChatOllama", "OllamaEmbeddings"),
-        ("azure", "ollama", "AzureChatOpenAI", "OllamaEmbeddings"),
         ("gemini", "ollama", "ChatGoogleGenerativeAI", "OllamaEmbeddings"),
-        ("ollama", "azure", "ChatOllama", "AzureOpenAIEmbeddings"),
+        ("ollama", "gemini", "ChatOllama", "GoogleGenerativeAIEmbeddings"),
         ("gemini", "gemini", "ChatGoogleGenerativeAI", "GoogleGenerativeAIEmbeddings"),
     ],
 )
@@ -83,9 +79,6 @@ def test_providers_switch_by_env_only(
     monkeypatch.setenv("EMBEDDING_PROVIDER", emb)
     monkeypatch.setenv("EMBEDDING_MODEL", "emb")
     monkeypatch.setenv("GOOGLE_API_KEY", "g-key")
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "a-key")
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
-    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "chat")
     s = Settings(_env_file=None)  # type: ignore[call-arg]  # same call; only the env differs
     assert type(unwrap(create_chat_model(s))).__name__ == chat_cls
     assert type(unwrap(create_embeddings(s))).__name__ == emb_cls
@@ -117,7 +110,7 @@ def test_no_provider_branching_outside_factory() -> None:
 def test_ingest_over_sample_without_keys(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     use_embeddings(monkeypatch, DeterministicFakeEmbedding(size=16))
     s = settings(llm_provider="ollama", data_dir=str(SAMPLE), index_dir=str(tmp_path))
-    assert s.google_api_key == "" and s.azure_openai_api_key == ""
+    assert s.google_api_key == ""
     store = InMemoryVectorStore(create_embeddings(s))
     collection = index_collection_name(s)
     assert collection == "manuals-ollama-nomic-embed-text"

@@ -41,12 +41,12 @@ def test_blank_providers_are_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_PROVIDER", " Azure ")
+    monkeypatch.setenv("LLM_PROVIDER", " Gemini ")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "OLLAMA")
     monkeypatch.setenv("EMBEDDING_MODEL", "mxbai-embed-large")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://example:1234")
     s = make()
-    assert (s.llm_provider, s.embedding_provider) == ("azure", "ollama")
+    assert (s.llm_provider, s.embedding_provider) == ("gemini", "ollama")
     assert s.embedding_model == "mxbai-embed-large"
     assert s.ollama_base_url == "http://example:1234"
 

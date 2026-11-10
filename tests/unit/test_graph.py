@@ -260,8 +260,8 @@ def test_readme_diagram_matches_graph() -> None:
 
 def test_rag_package_has_no_provider_imports() -> None:
     banned = re.compile(
-        r"^\s*(?:from|import)\s+(?:langchain_openai|langchain_google_genai|langchain_ollama"
-        r"|langchain_chroma|openai|ollama|chromadb|google)\b",
+        r"^\s*(?:from|import)\s+(?:langchain_google_genai|langchain_ollama"
+        r"|langchain_chroma|ollama|chromadb|google)\b",
         re.MULTILINE,
     )
     for path in (ROOT / "app" / "rag").glob("*.py"):

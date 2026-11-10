@@ -74,18 +74,10 @@ def translate_error(provider: str, exc: BaseException) -> ServiceError | None:
         return exc
     name = type(exc).__name__
 
-    # OpenAI / Azure OpenAI (APITimeoutError subclasses APIConnectionError: check it first)
-    timeouts = _vendor_types("openai", ["APITimeoutError"])
-    if timeouts and isinstance(exc, timeouts):
-        return LLMTimeoutError(f"{provider} request timed out ({name})")
-    conn = _vendor_types("openai", ["APIConnectionError"])
-    if conn and isinstance(exc, conn):
-        return LLMUnavailableError(f"{provider} is unreachable ({name})")
-    status_types = _vendor_types("openai", ["APIStatusError"]) + _vendor_types(
-        "google.genai.errors", ["APIError"]
-    )
+    # Gemini API errors carry the HTTP status in `code`
+    status_types = _vendor_types("google.genai.errors", ["APIError"])
     if status_types and isinstance(exc, status_types):
-        status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        status = getattr(exc, "code", None)
         if isinstance(status, int):
             return _from_status(provider, status, name, exc)
         return None

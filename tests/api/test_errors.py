@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import openai
 import pytest
 from fastapi.testclient import TestClient
+from google.genai import errors as genai_errors
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
 from app.api.deps import get_qa_service
@@ -186,15 +186,12 @@ def test_rate_limited_default_comes_from_settings(tmp_path: Path) -> None:
 
 
 def test_vendor_rate_limit_after_retries_end_to_end(tmp_path: Path) -> None:
-    exc = openai.RateLimitError(
-        "slow",
-        response=httpx.Response(
-            429, request=httpx.Request("POST", "https://x.test"), headers={"Retry-After": "3"}
-        ),
-        body=None,
+    response = httpx.Response(
+        429, request=httpx.Request("POST", "https://x.test"), headers={"Retry-After": "3"}
     )
+    exc = genai_errors.APIError(429, {"error": {"message": "slow"}}, response)
     inner = FlakyChatModel(failures=[exc], always=True)
-    chat = ResilientChatModel(inner=inner, provider="azure", rate_limit_retries=1)
+    chat = ResilientChatModel(inner=inner, provider="gemini", rate_limit_retries=1)
     with make_client(tmp_path, chat) as c:
         wait_ready(c)
         resp = c.post(URL, json={"question": QUESTION})

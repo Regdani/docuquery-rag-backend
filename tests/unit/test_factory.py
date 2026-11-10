@@ -19,11 +19,6 @@ from app.providers.factory import (
 from app.providers.resilience import unwrap
 from tests.fakes import DeterministicFakeEmbedding, FakeListChatModel, InMemoryVectorStore
 
-AZURE: dict[str, Any] = {
-    "azure_openai_api_key": "secret-azure-key",
-    "azure_openai_endpoint": "https://example.openai.azure.com",
-    "azure_openai_chat_deployment": "chat-dep",
-}
 GEMINI: dict[str, Any] = {"google_api_key": "secret-google-key"}
 
 
@@ -50,14 +45,14 @@ def both(provider: str, **kwargs: Any) -> Settings:
 
 
 def test_supported_providers() -> None:
-    assert SUPPORTED_PROVIDERS == ("azure", "gemini", "ollama")
+    assert SUPPORTED_PROVIDERS == ("gemini", "ollama")
 
 
 def test_no_default_no_inheritance_and_normalization() -> None:
     assert make().llm_provider is None
     assert make(llm_provider="gemini").embedding_provider is None
-    s = make(llm_provider=" Azure ", embedding_provider=" OLLAMA ")
-    assert (s.llm_provider, s.embedding_provider) == ("azure", "ollama")
+    s = make(llm_provider=" Gemini ", embedding_provider=" OLLAMA ")
+    assert (s.llm_provider, s.embedding_provider) == ("gemini", "ollama")
 
 
 def test_service_error_pattern() -> None:
@@ -68,26 +63,12 @@ def test_service_error_pattern() -> None:
 
 def test_provider_defaults() -> None:
     s = make()
-    assert s.azure_openai_api_version
     assert s.gemini_chat_model == "gemini-3.1-flash-lite"
-
-
-def test_azure_all_missing_vars_named() -> None:
-    s = make(llm_provider="azure", embedding_provider="azure")
-    with pytest.raises(ProviderConfigError) as chat_exc:
-        create_chat_model(s)
-    with pytest.raises(ProviderConfigError) as emb_exc:
-        create_embeddings(s)
-    for name in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_DEPLOYMENT"):
-        assert name in str(chat_exc.value)
-    for name in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "EMBEDDING_MODEL"):
-        assert name in str(emb_exc.value)
 
 
 @pytest.mark.parametrize(
     ("provider", "extra", "chat_cls", "emb_cls"),
     [
-        ("azure", AZURE, "AzureChatOpenAI", "AzureOpenAIEmbeddings"),
         ("gemini", GEMINI, "ChatGoogleGenerativeAI", "GoogleGenerativeAIEmbeddings"),
         ("ollama", {}, "ChatOllama", "OllamaEmbeddings"),
     ],
@@ -101,14 +82,6 @@ def test_provider_classes(
 
 
 def test_timeouts_and_retries_applied() -> None:
-    s = make(llm_provider="azure", llm_timeout_seconds=12.0, max_retries=5, **AZURE)
-    model = unwrap(create_chat_model(s))
-    assert model.request_timeout == 12.0  # type: ignore[attr-defined]
-    assert model.max_retries == 5  # type: ignore[attr-defined]
-
-    ae = unwrap(create_embeddings(both("azure", embedding_timeout_seconds=4.0, **AZURE)))
-    assert ae.request_timeout == 4.0  # type: ignore[attr-defined]
-
     g = unwrap(
         create_chat_model(
             make(llm_provider="gemini", llm_timeout_seconds=7.0, max_retries=3, **GEMINI)
@@ -126,37 +99,20 @@ def test_timeouts_and_retries_applied() -> None:
     assert e.client_kwargs == {"timeout": 3.0}  # type: ignore[attr-defined]
 
 
-@pytest.mark.parametrize(
-    ("provider", "extra", "missing"),
-    [
-        ("azure", {}, ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT"]),
-        ("gemini", {}, ["GOOGLE_API_KEY"]),
-    ],
-)
-def test_missing_variables_named(provider: str, extra: dict[str, Any], missing: list[str]) -> None:
-    s = make(llm_provider=provider, embedding_provider=provider, **extra)
+def test_gemini_missing_variables_named() -> None:
+    s = make(llm_provider="gemini", embedding_provider="gemini")
     with pytest.raises(ProviderConfigError) as chat_exc:
         create_chat_model(s)
     with pytest.raises(ProviderConfigError) as emb_exc:
         create_embeddings(s)
-    for name in missing:
-        assert name in str(chat_exc.value)
-        assert name in str(emb_exc.value)
-    assert "AZURE_OPENAI_CHAT_DEPLOYMENT" in str(chat_exc.value) or provider != "azure"
-    assert "EMBEDDING_MODEL" in str(emb_exc.value)
-
-
-def test_azure_missing_only_deployment() -> None:
-    s = both("azure", **{**AZURE, "azure_openai_chat_deployment": ""})
-    with pytest.raises(ProviderConfigError, match="AZURE_OPENAI_CHAT_DEPLOYMENT"):
-        create_chat_model(s)
-    create_embeddings(s)  # embedding deployment is set, so this still works
+    assert "GOOGLE_API_KEY" in str(chat_exc.value)
+    assert "GOOGLE_API_KEY" in str(emb_exc.value) and "EMBEDDING_MODEL" in str(emb_exc.value)
 
 
 def test_unknown_llm_provider_lists_supported() -> None:
     with pytest.raises(ProviderConfigError) as exc:
         create_chat_model(make(llm_provider="mock"))
-    assert "azure, gemini, ollama" in str(exc.value)
+    assert "gemini, ollama" in str(exc.value)
     assert "LLM_PROVIDER" in str(exc.value)
 
 
@@ -167,12 +123,12 @@ def test_missing_provider_is_named(call: Any) -> None:
     variable = "LLM_PROVIDER" if call is create_chat_model else "EMBEDDING_PROVIDER"
     with pytest.raises(ProviderConfigError, match=f"{variable} is not set") as exc:
         call(make())
-    assert "azure, gemini, ollama" in str(exc.value)
+    assert "Supported values: gemini, ollama" in str(exc.value)
 
 
 @pytest.mark.parametrize("provider", SUPPORTED_PROVIDERS)
 def test_missing_embedding_model_is_named(provider: str) -> None:
-    s = make(embedding_provider=provider, **AZURE, **GEMINI)
+    s = make(embedding_provider=provider, **GEMINI)
     with pytest.raises(ProviderConfigError, match="EMBEDDING_MODEL"):
         create_embeddings(s)
     with pytest.raises(ProviderConfigError, match="EMBEDDING_MODEL"):
@@ -184,15 +140,13 @@ def test_embedding_model_is_used_by_every_provider() -> None:
     assert ollama.model == "m1"  # type: ignore[attr-defined]
     gemini = unwrap(create_embeddings(both("gemini", embedding_model="m2", **GEMINI)))
     assert gemini.model.endswith("m2")  # type: ignore[attr-defined]
-    azure = unwrap(create_embeddings(both("azure", embedding_model="m3", **AZURE)))
-    assert azure.deployment == "m3"  # type: ignore[attr-defined]
     assert factory.embedding_model_name(both("gemini", embedding_model="m2")) == "gemini:m2"
 
 
 def test_unknown_embedding_provider() -> None:
     with pytest.raises(ProviderConfigError) as exc:
         create_embeddings(make(embedding_provider="nope"))
-    assert "azure, gemini, ollama" in str(exc.value)
+    assert "gemini, ollama" in str(exc.value)
     assert "EMBEDDING_PROVIDER" in str(exc.value)
 
 
@@ -204,8 +158,8 @@ def test_incomplete_embedding_provider() -> None:
 
 
 def test_mixed_setup() -> None:
-    s = make(llm_provider="azure", embedding_provider="ollama", embedding_model="emb", **AZURE)
-    assert type(unwrap(create_chat_model(s))).__name__ == "AzureChatOpenAI"
+    s = make(llm_provider="gemini", embedding_provider="ollama", embedding_model="emb", **GEMINI)
+    assert type(unwrap(create_chat_model(s))).__name__ == "ChatGoogleGenerativeAI"
     assert type(unwrap(create_embeddings(s))).__name__ == "OllamaEmbeddings"
 
 
@@ -242,22 +196,22 @@ def test_fakes_available() -> None:
 
 def test_lifespan_builds_once_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     s = make(
-        llm_provider="azure",
+        llm_provider="gemini",
         embedding_provider="ollama",
         embedding_model="nomic-embed-text",
         index_dir=str(tmp_path / "index"),
         data_dir=str(tmp_path / "missing"),
-        **AZURE,
+        **GEMINI,
     )
     with caplog.at_level(logging.INFO, logger="app.main"):
         with TestClient(create_app(s)) as client:
             state = client.app.state  # type: ignore[attr-defined]
-            assert type(unwrap(state.chat_model)).__name__ == "AzureChatOpenAI"
+            assert type(unwrap(state.chat_model)).__name__ == "ChatGoogleGenerativeAI"
             assert type(unwrap(state.embeddings)).__name__ == "OllamaEmbeddings"
             assert type(state.vector_store).__name__ == "Chroma"
-    assert "LLM_PROVIDER=azure client=AzureChatOpenAI" in caplog.text
+    assert "LLM_PROVIDER=gemini client=ChatGoogleGenerativeAI" in caplog.text
     assert "EMBEDDING_PROVIDER=ollama client=OllamaEmbeddings" in caplog.text
-    assert "secret-azure-key" not in caplog.text
+    assert "secret-google-key" not in caplog.text
 
 
 def test_lifespan_fails_on_invalid_config() -> None:
@@ -274,11 +228,9 @@ def test_lifespan_fails_without_providers() -> None:
 
 def test_provider_imports_confined_to_providers_package() -> None:
     forbidden = {
-        "langchain_openai",
         "langchain_ollama",
         "langchain_chroma",
         "langchain_google_genai",
-        "openai",
         "ollama",
         "chromadb",
         "google",
