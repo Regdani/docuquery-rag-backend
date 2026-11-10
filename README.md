@@ -126,7 +126,7 @@ No account, no key, no cost. The first model download needs an internet connecti
 
 ### 2c. Docker, local mode (Ollama)
 
-A `.env` file is optional here: the `app` service fills in the Ollama values itself.
+Compose reads every setting from `.env`, as in the other setups, and stops with an error if the file is missing. A `.env` copied from `.env.example` already holds the Ollama values; only `OLLAMA_BASE_URL` is replaced by compose, because inside compose Ollama is reached by its service name.
 
 ```bash
 docker compose up --build -d
@@ -147,7 +147,7 @@ docker compose --profile cloud up --build -d app-cloud
 docker compose run --rm app-cloud python -m app.ingest
 ```
 
-`app-cloud` has no provider defaults, so a missing variable stops it at startup. Both app services publish port 8000, so run only one of them at a time. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
+A missing provider variable or key stops the service at startup. Both app services publish port 8000, so run only one of them at a time. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
 
 ### 3. Ask a first question
 
@@ -577,9 +577,9 @@ Run `ollama pull nomic-embed-text` first. The index collection name contains the
 
 ## Docker setup
 
-The `Dockerfile` builds a `python:3.12-slim` image that installs the locked dependencies with uv (`uv sync --frozen --no-dev`), runs as the non-root user `appuser` and starts `uvicorn app.main:app` on `0.0.0.0:8000`. The sample manuals are baked into the image; the index is not. `docker-compose.yml` defines:
+The `Dockerfile` builds a `python:3.12-slim` image that installs the locked dependencies with uv (`uv sync --frozen --no-dev`), runs as the non-root user `appuser` and starts `uvicorn app.main:app` on `0.0.0.0:8000`. The sample manuals are baked into the image; the index is not. Both app services read their settings from `.env`, which is required: compose sets no provider defaults, so the provider is chosen the same way as without Docker. Only `INDEX_DIR` and, for `app`, `OLLAMA_BASE_URL` are fixed by compose, because they depend on the container layout. `docker-compose.yml` defines:
 
-- `app`: the API with Ollama as its provider (local mode); `OLLAMA_BASE_URL` is set to `http://ollama:11434` by compose, overriding `.env`. As the local-mode service it fills in `LLM_PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama` and `EMBEDDING_MODEL=nomic-embed-text` when `.env` does not set them, so it starts without a `.env`; values from `.env` take precedence.
+- `app`: the API for local mode, started together with Ollama; `OLLAMA_BASE_URL` is set to `http://ollama:11434` by compose, overriding `.env`.
 - `ollama`: the Ollama server (`ollama/ollama`), with the models stored in the named volume `ollama`.
 - `app-cloud`: the same image without Ollama, in the `cloud` profile, for Gemini.
 

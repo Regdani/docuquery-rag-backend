@@ -4,9 +4,10 @@
 
 x-app: &app
   build: .
+  # Every app setting, including the provider, comes from .env.
   env_file:
     - path: .env
-      required: false
+      required: true
   ports:
     - "${APP_PORT:-8000}:8000"
   volumes:
@@ -30,15 +31,10 @@ services:
       # Overrides any value from .env: inside compose Ollama is reachable by service name.
       OLLAMA_BASE_URL: http://ollama:11434
       INDEX_DIR: /app/data/index
-      # This service is the local mode, so it fills in the Ollama models when .env leaves
-      # them out; values set in .env (or the shell) win. app-cloud has no such defaults.
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
     depends_on:
       - ollama
 
-  # Same image as `app`, without the Ollama dependency; provider and keys come from .env.
+  # Same image as `app`, without the Ollama dependency.
   app-cloud:
     <<: *app
     profiles: ["cloud"]
