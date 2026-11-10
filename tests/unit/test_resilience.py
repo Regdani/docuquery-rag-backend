@@ -153,6 +153,8 @@ def test_factory_wires_retry_settings_for_cloud_and_local() -> None:
     s = Settings(
         _env_file=None,  # type: ignore[call-arg]
         llm_provider="gemini",
+        embedding_provider="gemini",
+        embedding_model="gemini-embedding-001",
         google_api_key=SECRET,
         max_retries=4,
         retry_backoff_seconds=0.25,
@@ -164,7 +166,7 @@ def test_factory_wires_retry_settings_for_cloud_and_local() -> None:
     assert isinstance(emb, ResilientEmbeddings)
     policy = emb._policy
     assert (policy.max_retries, policy.backoff_seconds) == (4, 0.25)
-    local = Settings(_env_file=None)  # type: ignore[call-arg]
+    local = Settings(_env_file=None, llm_provider="ollama")  # type: ignore[call-arg]
     local_chat = create_chat_model(local)  # ollama: translation only, never a 429 retry
     assert isinstance(local_chat, ResilientChatModel)
     assert local_chat.rate_limit_retries == 0

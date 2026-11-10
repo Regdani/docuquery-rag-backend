@@ -36,6 +36,8 @@ class CountingEmbedding(DeterministicFakeEmbedding):
 def make(tmp_path: Path, **kwargs: Any) -> Settings:
     kwargs.setdefault("data_dir", str(tmp_path / "docs"))
     kwargs.setdefault("index_dir", str(tmp_path / "index"))
+    kwargs.setdefault("embedding_provider", "ollama")
+    kwargs.setdefault("embedding_model", "nomic-embed-text")
     return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg]
 
 
@@ -96,8 +98,8 @@ def test_parse_manual_requires_heading() -> None:
 
 
 def test_collection_name_includes_sanitized_model(tmp_path: Path) -> None:
-    a = index_collection_name(make(tmp_path, ollama_embedding_model="nomic-embed-text"))
-    b = index_collection_name(make(tmp_path, ollama_embedding_model="mxbai/embed:large"))
+    a = index_collection_name(make(tmp_path, embedding_model="nomic-embed-text"))
+    b = index_collection_name(make(tmp_path, embedding_model="mxbai/embed:large"))
     assert a != b
     assert a.startswith("manuals-") and "nomic-embed-text" in a
     assert all(ch.isalnum() or ch in "-_." for ch in b)

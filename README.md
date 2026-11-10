@@ -50,7 +50,7 @@ The same pipeline runs from the command line:
 uv run python -m app.ingest
 ```
 
-It prints a summary and exits with 0 on success and 1 (with the error message) when indexing failed. Ollama must be running with the embedding model pulled (`ollama pull nomic-embed-text`) when `LLM_PROVIDER=ollama`.
+It prints a summary and exits with 0 on success and 1 (with the error message) when indexing failed. Ollama must be running with the embedding model pulled (`ollama pull nomic-embed-text`) when `EMBEDDING_PROVIDER=ollama`.
 
 Settings: `DATA_DIR`, `INDEX_DIR`, `CHROMA_COLLECTION`, `CHUNK_SIZE` and `CHUNK_OVERLAP` (see `.env.example`).
 
@@ -233,7 +233,15 @@ curl -s -i "http://localhost:8000/health/ready?check_llm=true"
 
 ## Model providers
 
-The chat model and the embeddings are chosen with `LLM_PROVIDER` (`azure`, `gemini` or `ollama`, default `ollama`) and `EMBEDDING_PROVIDER` (defaults to `LLM_PROVIDER`). A missing variable or an unknown value stops the application at startup with an error that names the variable; there is never a silent fallback. Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.
+Three variables choose the models, and all three are required:
+
+| Variable | Values | Meaning |
+|---|---|---|
+| `LLM_PROVIDER` | `azure`, `gemini`, `ollama` | Provider of the chat model |
+| `EMBEDDING_PROVIDER` | `azure`, `gemini`, `ollama` | Provider of the embeddings, chosen independently of `LLM_PROVIDER` |
+| `EMBEDDING_MODEL` | model name | Embedding model of `EMBEDDING_PROVIDER`: `nomic-embed-text` (Ollama), `gemini-embedding-001` (Gemini) or the embedding deployment name (Azure) |
+
+There are no defaults and no fallbacks: the embeddings never follow `LLM_PROVIDER`, and a missing or unknown value stops the application (and the ingest command) at startup with an error that names the variable. Because chat and embeddings are always configured separately, a mixed setup changes only these lines. The chat model names stay provider-specific (`AZURE_OPENAI_CHAT_DEPLOYMENT`, `GEMINI_CHAT_MODEL`, `OLLAMA_CHAT_MODEL`). Every external call uses `LLM_TIMEOUT_SECONDS` / `EMBEDDING_TIMEOUT_SECONDS` and `MAX_RETRIES`.
 
 For the cloud providers, vendor failures are translated into three domain errors: a timeout (`LLM_TIMEOUT`, HTTP 504), an unreachable provider or a 5xx answer (`LLM_UNAVAILABLE`, 502) and rate limiting (`LLM_RATE_LIMITED`, 503 with a `Retry-After` header). An HTTP 429 is retried at most `MAX_RETRIES` times with an exponential backoff starting at `RETRY_BACKOFF_SECONDS` before the rate-limit error is raised. This sits on top of the vendor client's own retries, so the worst case is more calls than `MAX_RETRIES` alone suggests. Error messages never contain keys or vendor messages.
 
@@ -245,11 +253,12 @@ Azure OpenAI is the primary, production-like mode: a managed service with a stab
 
 ```env
 LLM_PROVIDER=azure
+EMBEDDING_PROVIDER=azure
+EMBEDDING_MODEL=<embedding deployment name>
 AZURE_OPENAI_API_KEY=<key>
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_API_VERSION=2024-10-21
 AZURE_OPENAI_CHAT_DEPLOYMENT=<chat deployment name>
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=<embedding deployment name>
 ```
 
 `AZURE_OPENAI_API_VERSION` has a default and may be omitted. The deployment names are the names you gave the deployments, not the model names.
@@ -260,12 +269,13 @@ Gemini is the cloud mode that can be tried for free: create an API key in Google
 
 ```env
 LLM_PROVIDER=gemini
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_API_KEY=<key>
 GEMINI_CHAT_MODEL=gemini-3.1-flash-lite
-GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 ```
 
-Only `GOOGLE_API_KEY` is required. `gemini-3.1-flash-lite` is the small, low-latency, low-cost model, which is enough for answering from a few retrieved manual chunks and stays within free-tier rate limits. `gemini-embedding-001` is Google's general-purpose text embedding model. The free tier is rate limited, so a first indexing run may hit 429 answers; they are retried with backoff.
+Besides the three provider variables only `GOOGLE_API_KEY` is required; `GEMINI_CHAT_MODEL` has a default. `gemini-3.1-flash-lite` is the small, low-latency, low-cost model, which is enough for answering from a few retrieved manual chunks and stays within free-tier rate limits. `gemini-embedding-001` is Google's general-purpose text embedding model. The free tier is rate limited, so a first indexing run may hit 429 answers; they are retried with backoff.
 
 To confirm that the embedding model is available for your key, run the key-gated integration test, which calls `embed_query` with the configured model:
 
@@ -273,11 +283,11 @@ To confirm that the embedding model is available for your key, run the key-gated
 GOOGLE_API_KEY=<key> uv run pytest -m integration -k gemini
 ```
 
-You can also list the models your key can use with `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>`. If the embedding model is not available to you, set `GEMINI_EMBEDDING_MODEL` to another model from that list.
+You can also list the models your key can use with `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>`. If the embedding model is not available to you, set `EMBEDDING_MODEL` to another model from that list.
 
 ### Configure Ollama (free local mode)
 
-Ollama runs the chat model and the embeddings on your own machine: no account, no key, no cost. It is the default provider.
+Ollama runs the chat model and the embeddings on your own machine: no account, no key, no cost. `.env.example` is set up for this mode.
 
 1. Install Ollama from https://ollama.com/download (Windows, macOS, Linux).
 2. Pull the two default models:
@@ -288,14 +298,14 @@ Ollama runs the chat model and the embeddings on your own machine: no account, n
    ```
 
 3. Make sure the server is running. The desktop installers start it automatically; otherwise run `ollama serve`. It listens on `http://localhost:11434`.
-4. Configure the application (these are the defaults, so a plain `.env` copied from `.env.example` already works):
+4. Configure the application (a `.env` copied from `.env.example` already contains these values):
 
    ```env
    LLM_PROVIDER=ollama
-   # EMBEDDING_PROVIDER defaults to LLM_PROVIDER; set it only for a mixed setup
+   EMBEDDING_PROVIDER=ollama
+   EMBEDDING_MODEL=nomic-embed-text
    OLLAMA_BASE_URL=http://localhost:11434
    OLLAMA_CHAT_MODEL=llama3.2:3b
-   OLLAMA_EMBEDDING_MODEL=nomic-embed-text
    ```
 
 5. Build the index and start the application:
@@ -335,10 +345,11 @@ Chat answers can come from Gemini while the embeddings stay local and free:
 ```env
 LLM_PROVIDER=gemini
 EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=nomic-embed-text
 GOOGLE_API_KEY=<key>
 ```
 
-Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001`. The old collection stays in `INDEX_DIR` unused.
+Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` with `EMBEDDING_MODEL=gemini-embedding-001` uses `manuals-gemini-gemini-embedding-001`. The old collection stays in `INDEX_DIR` unused.
 
 ## Server address and API docs
 
@@ -363,7 +374,7 @@ Neither mode opens a browser; open the Swagger UI by hand. It loads while startu
 
 The `Dockerfile` builds a `python:3.12-slim` image that installs the locked dependencies with uv (`uv sync --frozen --no-dev`), runs as the non-root user `appuser` and starts `uvicorn app.main:app` on `0.0.0.0:8000`. The sample manuals are baked into the image; the index is not. `docker-compose.yml` defines:
 
-- `app`: the API with Ollama as its provider (local mode); `OLLAMA_BASE_URL` is set to `http://ollama:11434` by compose, overriding `.env`.
+- `app`: the API with Ollama as its provider (local mode); `OLLAMA_BASE_URL` is set to `http://ollama:11434` by compose, overriding `.env`. As the local-mode service it fills in `LLM_PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama` and `EMBEDDING_MODEL=nomic-embed-text` when `.env` does not set them, so it starts without a `.env`; values from `.env` take precedence.
 - `ollama`: the Ollama server (`ollama/ollama`), with the models stored in the named volume `ollama`.
 - `app-cloud`: the same image without Ollama, in the `cloud` profile, for Azure OpenAI or Gemini.
 
@@ -385,14 +396,16 @@ Pull both models before the ingest step and before the first question: without t
 
 ### Cloud mode (Azure OpenAI or Gemini)
 
-Set the provider and its keys in `.env` (names in `.env.example`), for example:
+Set the three provider variables and the keys in `.env` (names in `.env.example`), for example:
 
 ```env
 LLM_PROVIDER=gemini
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_API_KEY=<key>
 ```
 
-or `LLM_PROVIDER=azure` with the `AZURE_OPENAI_*` variables, then start only the cloud service:
+or the Azure equivalent with the `AZURE_OPENAI_*` variables, then start only the cloud service. `app-cloud` has no provider defaults, so a missing variable stops it at startup:
 
 ```bash
 docker compose --profile cloud up --build -d app-cloud

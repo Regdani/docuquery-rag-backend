@@ -3,7 +3,13 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 
-KEYS = ["LLM_PROVIDER", "EMBEDDING_PROVIDER", "OLLAMA_BASE_URL", "RETRIEVAL_TOP_K"]
+KEYS = [
+    "LLM_PROVIDER",
+    "EMBEDDING_PROVIDER",
+    "EMBEDDING_MODEL",
+    "OLLAMA_BASE_URL",
+    "RETRIEVAL_TOP_K",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -16,31 +22,32 @@ def make() -> Settings:
     return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
-def test_defaults() -> None:
+def test_providers_and_embedding_model_have_no_defaults() -> None:
     s = make()
-    assert s.llm_provider == "ollama"
-    assert s.embedding_provider == "ollama"
+    assert (s.llm_provider, s.embedding_provider, s.embedding_model) == (None, None, "")
     assert s.ollama_chat_model == "llama3.2:3b"
-    assert s.ollama_embedding_model == "nomic-embed-text"
 
 
-def test_embedding_provider_follows_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_embedding_provider_does_not_follow_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
-    assert make().embedding_provider == "gemini"
+    assert make().embedding_provider is None
 
 
-def test_empty_embedding_provider_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_PROVIDER", "azure")
+def test_blank_providers_are_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "   ")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "")
-    assert make().embedding_provider == "azure"
+    s = make()
+    assert (s.llm_provider, s.embedding_provider) == (None, None)
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LLM_PROVIDER", "azure")
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "ollama")
+    monkeypatch.setenv("LLM_PROVIDER", " Azure ")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "OLLAMA")
+    monkeypatch.setenv("EMBEDDING_MODEL", "mxbai-embed-large")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://example:1234")
     s = make()
     assert (s.llm_provider, s.embedding_provider) == ("azure", "ollama")
+    assert s.embedding_model == "mxbai-embed-large"
     assert s.ollama_base_url == "http://example:1234"
 
 

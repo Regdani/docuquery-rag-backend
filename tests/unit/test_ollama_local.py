@@ -30,14 +30,19 @@ from tests.fakes import (
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "data" / "sample"
 BASE_URL = "http://ollama.test:11434"
+LOCAL: dict[str, Any] = {
+    "llm_provider": "ollama",
+    "embedding_provider": "ollama",
+    "embedding_model": "nomic-embed-text",
+}
 ENV_VARS = (
     "LLM_PROVIDER",
     "EMBEDDING_PROVIDER",
+    "EMBEDDING_MODEL",
     "GOOGLE_API_KEY",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_CHAT_DEPLOYMENT",
-    "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
     "OLLAMA_BASE_URL",
 )
 
@@ -49,7 +54,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def settings(**kwargs: Any) -> Settings:
-    return Settings(_env_file=None, **kwargs)  # type: ignore[call-arg]
+    """Settings for the local mode; keyword arguments override the provider choice."""
+    return Settings(_env_file=None, **{**LOCAL, **kwargs})  # type: ignore[call-arg]
 
 
 def use_embeddings(monkeypatch: pytest.MonkeyPatch, embeddings: Any) -> None:
@@ -63,36 +69,31 @@ def use_embeddings(monkeypatch: pytest.MonkeyPatch, embeddings: Any) -> None:
 @pytest.mark.parametrize(
     ("llm", "emb", "chat_cls", "emb_cls"),
     [
-        ("ollama", None, "ChatOllama", "OllamaEmbeddings"),
+        ("ollama", "ollama", "ChatOllama", "OllamaEmbeddings"),
         ("azure", "ollama", "AzureChatOpenAI", "OllamaEmbeddings"),
         ("gemini", "ollama", "ChatGoogleGenerativeAI", "OllamaEmbeddings"),
         ("ollama", "azure", "ChatOllama", "AzureOpenAIEmbeddings"),
-        ("gemini", None, "ChatGoogleGenerativeAI", "GoogleGenerativeAIEmbeddings"),
+        ("gemini", "gemini", "ChatGoogleGenerativeAI", "GoogleGenerativeAIEmbeddings"),
     ],
 )
 def test_providers_switch_by_env_only(
-    monkeypatch: pytest.MonkeyPatch, llm: str, emb: str | None, chat_cls: str, emb_cls: str
+    monkeypatch: pytest.MonkeyPatch, llm: str, emb: str, chat_cls: str, emb_cls: str
 ) -> None:
     monkeypatch.setenv("LLM_PROVIDER", llm)
-    if emb:
-        monkeypatch.setenv("EMBEDDING_PROVIDER", emb)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", emb)
+    monkeypatch.setenv("EMBEDDING_MODEL", "emb")
     monkeypatch.setenv("GOOGLE_API_KEY", "g-key")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "a-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
     monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "chat")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "emb")
-    s = settings()  # same call every time; only the environment differs
+    s = Settings(_env_file=None)  # type: ignore[call-arg]  # same call; only the env differs
     assert type(unwrap(create_chat_model(s))).__name__ == chat_cls
     assert type(unwrap(create_embeddings(s))).__name__ == emb_cls
 
 
-def test_ollama_defaults_need_no_key() -> None:
+def test_ollama_needs_no_key() -> None:
     s = settings()
-    assert (s.ollama_base_url, s.ollama_chat_model, s.ollama_embedding_model) == (
-        "http://localhost:11434",
-        "llama3.2:3b",
-        "nomic-embed-text",
-    )
+    assert (s.ollama_base_url, s.ollama_chat_model) == ("http://localhost:11434", "llama3.2:3b")
     assert type(unwrap(create_chat_model(s))).__name__ == "ChatOllama"
     assert type(unwrap(create_embeddings(s))).__name__ == "OllamaEmbeddings"
 

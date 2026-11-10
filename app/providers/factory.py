@@ -39,6 +39,10 @@ def _import_error(provider: str, package: str, exc: ImportError) -> ProviderConf
 
 
 def _unknown(kind: str, value: str | None) -> ProviderConfigError:
+    if value is None:
+        return ProviderConfigError(
+            f"{kind} is not set. Supported values: {', '.join(SUPPORTED_PROVIDERS)}"
+        )
     return ProviderConfigError(
         f"Unknown {kind} '{value}'. Supported values: {', '.join(SUPPORTED_PROVIDERS)}"
     )
@@ -101,14 +105,14 @@ def _create_azure_embeddings(settings: Settings) -> Embeddings:
     _require(
         settings,
         "azure",
-        ["azure_openai_api_key", "azure_openai_endpoint", "azure_openai_embedding_deployment"],
+        ["azure_openai_api_key", "azure_openai_endpoint", "embedding_model"],
     )
     try:
         from langchain_openai import AzureOpenAIEmbeddings
     except ImportError as exc:
         raise _import_error("azure", "langchain-openai", exc) from exc
     return AzureOpenAIEmbeddings(
-        deployment=settings.azure_openai_embedding_deployment,
+        deployment=settings.embedding_model,
         azure_endpoint=settings.azure_openai_endpoint,
         openai_api_key=SecretStr(settings.azure_openai_api_key),
         openai_api_version=settings.azure_openai_api_version,
@@ -118,13 +122,13 @@ def _create_azure_embeddings(settings: Settings) -> Embeddings:
 
 
 def _create_gemini_embeddings(settings: Settings) -> Embeddings:
-    _require(settings, "gemini", ["google_api_key"])
+    _require(settings, "gemini", ["google_api_key", "embedding_model"])
     try:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
     except ImportError as exc:
         raise _import_error("gemini", "langchain-google-genai", exc) from exc
     return GoogleGenerativeAIEmbeddings(
-        model=settings.gemini_embedding_model,
+        model=settings.embedding_model,
         google_api_key=settings.google_api_key,
         # The embeddings client has no max_retries; retries come from the resilience wrapper.
         client_args={"timeout": settings.embedding_timeout_seconds},
@@ -132,13 +136,13 @@ def _create_gemini_embeddings(settings: Settings) -> Embeddings:
 
 
 def _create_ollama_embeddings(settings: Settings) -> Embeddings:
-    _require(settings, "ollama", ["ollama_base_url", "ollama_embedding_model"])
+    _require(settings, "ollama", ["ollama_base_url", "embedding_model"])
     try:
         from langchain_ollama import OllamaEmbeddings
     except ImportError as exc:
         raise _import_error("ollama", "langchain-ollama", exc) from exc
     return OllamaEmbeddings(
-        model=settings.ollama_embedding_model,
+        model=settings.embedding_model,
         base_url=settings.ollama_base_url,
         client_kwargs={"timeout": settings.embedding_timeout_seconds},
     )
@@ -160,7 +164,7 @@ _EMBEDDINGS: dict[str, Callable[[Settings], Embeddings]] = {
 
 def create_chat_model(settings: Settings) -> BaseChatModel:
     """Build the chat model for `settings.llm_provider`."""
-    builder = _CHAT.get(settings.llm_provider)
+    builder = _CHAT.get(settings.llm_provider) if settings.llm_provider else None
     if builder is None:
         raise _unknown("LLM_PROVIDER", settings.llm_provider)
     model = builder(settings)
@@ -182,9 +186,9 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
 
 
 def create_embeddings(settings: Settings) -> Embeddings:
-    """Build the embeddings for `settings.embedding_provider` (defaults to the LLM provider)."""
-    provider = settings.embedding_provider or settings.llm_provider
-    builder = _EMBEDDINGS.get(provider)
+    """Build the embeddings for `settings.embedding_provider` (required, no fallback)."""
+    provider = settings.embedding_provider
+    builder = _EMBEDDINGS.get(provider) if provider else None
     if builder is None:
         raise _unknown("EMBEDDING_PROVIDER", provider)
     embeddings = builder(settings)
@@ -192,7 +196,7 @@ def create_embeddings(settings: Settings) -> Embeddings:
         policy = RetryPolicy(provider, settings.max_retries, settings.retry_backoff_seconds)
         return ResilientEmbeddings(embeddings, policy)
     if provider == "ollama":
-        translator = ollama_translator(settings.ollama_base_url, settings.ollama_embedding_model)
+        translator = ollama_translator(settings.ollama_base_url, settings.embedding_model)
         return ResilientEmbeddings(embeddings, RetryPolicy("ollama", 0, 0.0, translator))
     return embeddings
 
@@ -203,16 +207,12 @@ def client_name(client: object) -> str:
 
 
 def embedding_model_name(settings: Settings) -> str:
-    """Name of the embedding model/deployment the configured embedding provider uses."""
-    provider = settings.embedding_provider or settings.llm_provider
-    names = {
-        "azure": settings.azure_openai_embedding_deployment,
-        "gemini": settings.gemini_embedding_model,
-        "ollama": settings.ollama_embedding_model,
-    }
-    if provider not in names:
+    """`<provider>:<model>` of the configured embeddings; it also names the index collection."""
+    provider = settings.embedding_provider
+    if provider not in _EMBEDDINGS:
         raise _unknown("EMBEDDING_PROVIDER", provider)
-    return f"{provider}:{names[provider]}"
+    _require(settings, provider, ["embedding_model"])
+    return f"{provider}:{settings.embedding_model.strip()}"
 
 
 def index_collection_name(settings: Settings) -> str:

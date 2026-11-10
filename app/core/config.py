@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,10 +18,13 @@ class Settings(BaseSettings):
         env_ignore_empty=True,
     )
 
-    # Provider selection
-    llm_provider: str = "ollama"
-    embedding_provider: str | None = Field(
-        default=None, description="Defaults to llm_provider when unset."
+    # Provider selection: all three are required; the factory raises ProviderConfigError
+    # naming the variable when one is missing. There are no defaults or fallbacks.
+    llm_provider: str | None = Field(default=None, description="azure | gemini | ollama")
+    embedding_provider: str | None = Field(default=None, description="azure | gemini | ollama")
+    embedding_model: str = Field(
+        default="",
+        description="Embedding model of EMBEDDING_PROVIDER (the deployment name on Azure).",
     )
 
     # Azure OpenAI
@@ -29,17 +32,14 @@ class Settings(BaseSettings):
     azure_openai_endpoint: str = ""
     azure_openai_api_version: str = "2024-10-21"
     azure_openai_chat_deployment: str = ""
-    azure_openai_embedding_deployment: str = ""
 
     # Google Gemini
     google_api_key: str = ""
     gemini_chat_model: str = "gemini-3.1-flash-lite"
-    gemini_embedding_model: str = "gemini-embedding-001"
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "llama3.2:3b"
-    ollama_embedding_model: str = "nomic-embed-text"
 
     # Vector store and data
     index_dir: str = "./data/index"
@@ -88,24 +88,16 @@ class Settings(BaseSettings):
 
     @field_validator("llm_provider", "embedding_provider", mode="before")
     @classmethod
-    def _normalize_provider(cls, value: Any, info: ValidationInfo) -> Any:
-        # Unknown values are rejected by the provider factory with ProviderConfigError.
+    def _normalize_provider(cls, value: Any) -> Any:
+        # Missing and unknown values are rejected by the provider factory (ProviderConfigError).
         if isinstance(value, str):
-            value = value.strip().lower()
-            if not value:
-                return None if info.field_name == "embedding_provider" else "ollama"
+            return value.strip().lower() or None
         return value
 
     @field_validator("log_level", mode="before")
     @classmethod
     def _normalize_log_level(cls, value: Any) -> Any:
         return value.strip().upper() if isinstance(value, str) else value
-
-    @model_validator(mode="after")
-    def _default_embedding_provider(self) -> "Settings":
-        if self.embedding_provider is None:
-            self.embedding_provider = self.llm_provider
-        return self
 
 
 @lru_cache

@@ -48,3 +48,20 @@ def block_network(
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
     yield
+
+
+# The provider variables are required (no defaults). Offline tests start from an explicit
+# local configuration; tests about missing or other providers delete or override these.
+BASELINE_PROVIDER_ENV = {
+    "LLM_PROVIDER": "ollama",
+    "EMBEDDING_PROVIDER": "ollama",
+    "EMBEDDING_MODEL": "nomic-embed-text",
+}
+
+
+@pytest.fixture(autouse=True)
+def baseline_provider_env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.node.get_closest_marker("integration"):
+        return
+    for key, value in BASELINE_PROVIDER_ENV.items():
+        monkeypatch.setenv(key, value)

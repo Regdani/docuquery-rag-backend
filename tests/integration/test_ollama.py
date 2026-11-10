@@ -3,6 +3,7 @@
 Run with `uv run pytest -m integration -k ollama`.
 """
 
+import os
 from pathlib import Path
 
 import httpx
@@ -25,7 +26,12 @@ SAMPLE = Path(__file__).resolve().parents[2] / "data" / "sample"
 
 @pytest.fixture(scope="module")
 def ollama_settings() -> Settings:
-    settings = Settings(_env_file=None, llm_provider="ollama")  # type: ignore[call-arg]
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        llm_provider="ollama",
+        embedding_provider="ollama",
+        embedding_model=os.environ.get("EMBEDDING_MODEL") or "nomic-embed-text",
+    )
     base = settings.ollama_base_url.rstrip("/")
     try:
         response = httpx.get(f"{base}/api/tags", timeout=3.0)
@@ -33,7 +39,7 @@ def ollama_settings() -> Settings:
         pulled = {str(m.get("name", "")) for m in response.json().get("models", [])}
     except (httpx.HTTPError, ValueError) as exc:
         pytest.skip(f"Ollama is not reachable at {base} ({type(exc).__name__})")
-    for model in (settings.ollama_chat_model, settings.ollama_embedding_model):
+    for model in (settings.ollama_chat_model, settings.embedding_model):
         if not any(name == model or name.split(":")[0] == model for name in pulled):
             pytest.skip(f"Ollama model '{model}' is not pulled (run: ollama pull {model})")
     return settings
