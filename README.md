@@ -74,7 +74,7 @@ cp .env.example .env
 
 `uv sync` installs the exact versions pinned in `uv.lock` (the Docker setups do not need it). `.env.example` contains names and safe defaults only, no secrets, and is set up for local mode; the rest of the file (paths, chunking, retrieval, timeouts, limits, logging) documents every other setting with its default. `.env` is git-ignored, so `GOOGLE_API_KEY` goes only there.
 
-Then pick one of the four setups below.
+Then pick one of the setups below.
 
 ### 2a. Local mode (Ollama)
 
@@ -148,6 +148,26 @@ docker compose run --rm app-cloud python -m app.ingest
 ```
 
 A missing provider variable or key stops the service at startup. Both app services publish port 8000, so run only one of them at a time. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
+
+### 2e. Mixed mode (one provider for chat, the other for embeddings)
+
+Chat and embeddings are configured separately, so they can come from different providers, in either direction. Set the matching lines in `.env` and start the application as in "2a" (or "2c" in Docker, because the `app` service starts Ollama):
+
+```env
+# Gemini chat, local Ollama embeddings
+LLM_PROVIDER=gemini
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=nomic-embed-text
+GOOGLE_API_KEY=<key>
+
+# or: local Ollama chat, Gemini embeddings
+LLM_PROVIDER=ollama
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-001
+GOOGLE_API_KEY=<key>
+```
+
+Only the Ollama model of the local side has to be pulled (`nomic-embed-text` or `llama3.2:3b`).
 
 ### 3. Ask a first question
 
@@ -562,18 +582,9 @@ These figures are rough estimates based on the public model sizes.
 - **Quality limits:** a 3B model gives noticeably weaker answers than the cloud models. It can ignore the retrieved context or make up details (hallucination), follows instructions less reliably, handles long context poorly and is clearly weaker in languages other than English. The sample manuals are in English, which is the best case.
 - **Concurrency:** a single local server processes few requests at a time; parallel questions queue up. This mode is meant for development, demos and offline use.
 
-### Mixed setup: cloud chat with local embeddings
+### Mixed setup
 
-Chat answers can come from Gemini while the embeddings stay local and free:
-
-```env
-LLM_PROVIDER=gemini
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_MODEL=nomic-embed-text
-GOOGLE_API_KEY=<key>
-```
-
-Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` with `EMBEDDING_MODEL=gemini-embedding-001` uses `manuals-gemini-gemini-embedding-001`. The old collection stays in `INDEX_DIR` unused.
+Chat and embeddings can come from different providers (the `.env` values are in "Quick start"). The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: `EMBEDDING_PROVIDER=ollama` with `nomic-embed-text` uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` with `EMBEDDING_MODEL=gemini-embedding-001` uses `manuals-gemini-gemini-embedding-001`. The old collection stays in `INDEX_DIR` unused.
 
 ## Docker setup
 
