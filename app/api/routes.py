@@ -26,7 +26,10 @@ _REQUEST_EXAMPLES: dict[str, Any] = {
     },
     "follow_up": {
         "summary": "Follow-up with a session key",
-        "description": "Send the same session_key with each question of a conversation.",
+        "description": (
+            "Send the session_key returned by the previous answer (or your own key) "
+            "with each question of a conversation."
+        ),
         "value": {"question": "And what about the KV-300?", "session_key": "demo-session-01"},
     },
     "clarification": {
@@ -66,7 +69,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                             "answer": "Descale the KV-200 every 60 days or after 200 brew cycles.",
                             "status": "answered",
                             "sources": [_SRC],
-                            "session_key": None,
+                            "session_key": "5d41c3e0b7a94f2c8e6a1b9d0f3e7a2c",
                             "request_id": "3f2b8c1e9d7a4e6f8a1b2c3d4e5f6a7b",
                         },
                     ),
@@ -86,7 +89,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                             "answer": "I could not find relevant information in the manuals.",
                             "status": "no_answer",
                             "sources": [],
-                            "session_key": None,
+                            "session_key": "5d41c3e0b7a94f2c8e6a1b9d0f3e7a2c",
                             "request_id": "3f2b8c1e9d7a4e6f8a1b2c3d4e5f6a7b",
                         },
                     ),

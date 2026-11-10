@@ -70,12 +70,12 @@ Chroma runs embedded and is persisted to `INDEX_DIR` (`./data/index`). It needs 
 
 ## Conversation history
 
-Follow-up questions work when the client sends a `session_key` (8-64 characters: letters, digits, `-`, `_`) with the question.
+Every answer returns a `session_key`; sending it with the next question continues the conversation.
 
 - **How it works:** history is a dict of `session_key` to messages, guarded by an `asyncio.Lock`. The history is loaded before the question is processed and saved afterwards (question plus answer). Clarifying questions asked by the assistant are remembered too, so the user's next message is read in that context.
-- **Optional key:** the server never generates a key. Without a `session_key` no history is kept and every question stands alone. The response echoes the key (or `null`).
+- **Key handling:** without a `session_key` (or with an empty one) the request starts a new conversation and the server generates a random key (32 hex characters), stores the question and answer under it and returns it in the response. With a `session_key` (8-64 characters: letters, digits, `-`, `_`) the stored history is used and extended, and the same key is returned; an unknown key starts a new conversation under that key. A request without a key never sees earlier history.
 - **Setting:** `HISTORY_MAX_MESSAGES` (default 20, minimum 1) is the number of most recent messages kept per session; older messages are dropped.
-- **Limits:** history lives in process memory only and is lost on restart. Several instances do not share it, so a follow-up routed to another instance starts empty. It is not a LangGraph checkpointer, and the key is not authentication: anyone who knows a key can read and extend that session. The number of sessions is not bounded.
+- **Limits:** history lives in process memory only and is lost on restart. Several instances do not share it, so a follow-up routed to another instance starts empty. It is not a LangGraph checkpointer, and the key is not authentication: anyone who knows a key can read and extend that session. The number of sessions is not bounded, and since every request without a key creates one, memory grows with the request count until the restart.
 - **Production alternative:** store the transcripts in Redis (with a TTL) or PostgreSQL, behind the same get/save interface, so that all instances share them and they survive restarts.
 
 ## Question flow
@@ -98,7 +98,7 @@ flowchart TD
     save_history --> __end__([end])
 ```
 
-- `load_history`: loads the stored messages for the `session_key` (nothing without a key).
+- `load_history`: loads the stored messages for the `session_key` (empty for a new conversation).
 - `condense`: with history, one LLM call rewrites a follow-up into a standalone question; without history it makes no LLM call.
 - `assess`: one LLM call decides whether the question is clear enough to search. If the answer cannot be parsed, the question is treated as clear so retrieval still runs.
 - `clarify`: the LLM asks one targeted clarifying question (`status: clarification_needed`); retrieval and generation are skipped.
@@ -119,10 +119,10 @@ Request body:
 | Field | Required | Description |
 |---|---|---|
 | `question` | yes | The question. Whitespace is trimmed; a blank question is a `422`. |
-| `session_key` | no | 8-64 characters (letters, digits, `-`, `_`) linking follow-up questions. An empty string counts as absent. |
+| `session_key` | no | 8-64 characters (letters, digits, `-`, `_`) linking follow-up questions. Without it (or with an empty string) a new conversation starts and the response returns a generated key. |
 | `product_id` | no | Restricts retrieval to one product's manual (for example `KV-200`). Applied as a metadata filter on the shared index; without it, retrieval searches all manuals. An empty string counts as absent. |
 
-Response body: `answer`, `status`, `sources`, `session_key` and `request_id`. Each source has `product_id`, `product_name`, `section`, `chunk_id`, `score` (0 to 1) and a `snippet` capped at `SNIPPET_MAX_CHARS`.
+Response body: `answer`, `status`, `sources`, `session_key` (the request's key or a newly generated one) and `request_id`. Each source has `product_id`, `product_name`, `section`, `chunk_id`, `score` (0 to 1) and a `snippet` capped at `SNIPPET_MAX_CHARS`.
 
 | `status` | Meaning | `sources` |
 |---|---|---|
@@ -176,7 +176,7 @@ curl -s -X POST http://localhost:8000/api/v1/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "How often should I descale the KV-200 coffee maker?"}'
 
-# A follow-up in the same conversation
+# A follow-up: send the session_key returned by the previous answer (or your own key)
 curl -s -X POST http://localhost:8000/api/v1/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "And the KV-300?", "session_key": "demo-session-01"}'
@@ -185,32 +185,7 @@ curl -s -X POST http://localhost:8000/api/v1/ask \
 curl -s -X POST http://localhost:8000/api/v1/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "How do I descale it?", "product_id": "KV-200"}'
-```
 
-Example response:
-
-```json
-{
-  "answer": "Descale the KV-200 every 60 days or after 200 brew cycles.",
-  "status": "answered",
-  "sources": [
-    {
-      "product_id": "KV-200",
-      "product_name": "Espresso Coffee Maker",
-      "section": "Maintenance",
-      "chunk_id": "kv-200-espresso-coffee-maker.md::3::0",
-      "score": 0.82,
-      "snippet": "Descale the machine every 60 days or after 200 brew cycles."
-    }
-  ],
-  "session_key": null,
-  "request_id": "3f2b8c1e9d7a4e6f8a1b2c3d4e5f6a7b"
-}
-```
-
-More sample requests:
-
-```bash
 # Unclear question: 200 with status "clarification_needed" and a clarifying question
 curl -s -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application/json"   -d '{"question": "How do I clean it?"}'
 
@@ -219,8 +194,6 @@ curl -s -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application
 ```
 
 Health requests are in the next section.
-
-**Which sample requests were actually run:** these were sent with `curl` to a running `uvicorn` on a machine without Ollama and without cloud keys, so the indexing state was `failed`: `GET /health` (`200`), `GET /health/ready` and `GET /health/ready?check_llm=true` (`503`, state `failed`, `llm.status` `unreachable`), the empty question (`422`, body as shown above) and a valid question (`503 INDEX_NOT_READY`, `X-Request-ID` present). The success, follow-up, product-scoped and clarification responses, the `ready` health responses and the `timeout` LLM check were verified only through the automated API tests with fake providers; their example bodies are illustrative and were not produced by a real model.
 
 ## Health endpoints
 
@@ -294,7 +267,7 @@ GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 
 Only `GOOGLE_API_KEY` is required. `gemini-3.1-flash-lite` is the small, low-latency, low-cost model, which is enough for answering from a few retrieved manual chunks and stays within free-tier rate limits. `gemini-embedding-001` is Google's general-purpose text embedding model. The free tier is rate limited, so a first indexing run may hit 429 answers; they are retried with backoff.
 
-Availability of the embedding model: the key-gated integration test calls `embed_query` with `gemini-embedding-001`. It was not executed while this section was written (no key was available), so confirm it with your own key:
+To confirm that the embedding model is available for your key, run the key-gated integration test, which calls `embed_query` with the configured model:
 
 ```bash
 GOOGLE_API_KEY=<key> uv run pytest -m integration -k gemini
@@ -345,11 +318,9 @@ uv run pytest -m integration -k ollama
 
 It is skipped, not failed, when Ollama is unreachable or a configured model is not pulled.
 
-Which of these commands were run: the ingest command was run with Ollama stopped and printed the unreachable message above, and the integration test was run with Ollama stopped and was skipped. The installation, the pulls and the successful runs against a live server were not run, because Ollama is not installed on the machine where this section was written.
+#### Hardware, speed and quality (estimates)
 
-#### Hardware, speed and quality (estimates, not measured)
-
-These figures are rough estimates from the public model sizes; they were not measured on this project.
+These figures are rough estimates based on the public model sizes.
 
 - **Memory:** `llama3.2:3b` is about a 2 GB download and needs roughly 3 to 4 GB of free RAM (or VRAM) while loaded; `nomic-embed-text` is about 270 MB and needs well under 1 GB. Plan for about 8 GB of RAM in total, with room for the operating system and the application.
 - **CPU or GPU:** both models run on a CPU only. A GPU with 4 GB or more of VRAM (or Apple Silicon) is considerably faster but not required.
@@ -367,7 +338,26 @@ EMBEDDING_PROVIDER=ollama
 GOOGLE_API_KEY=<key>
 ```
 
-Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001` (names checked with the provider factory). The old collection stays in `INDEX_DIR` unused.
+Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` uses `manuals-gemini-gemini-embedding-001`. The old collection stays in `INDEX_DIR` unused.
+
+## Server address and API docs
+
+The API listens on port `8000` by default:
+
+| URL | What it is |
+|---|---|
+| http://localhost:8000/docs | Swagger UI with request and response examples |
+| http://localhost:8000/redoc | ReDoc view of the same API |
+| http://localhost:8000/openapi.json | OpenAPI schema |
+| http://localhost:8000/health | Liveness check |
+| http://localhost:8000/api/v1/ask | Ask endpoint (`POST`) |
+
+The port depends on how the server is started:
+
+- **Locally** (`uv run uvicorn app.main:app --reload`): uvicorn's default, `127.0.0.1:8000`. Use `--port <port>` to pick another one.
+- **Docker:** the container always listens on `8000`; compose publishes it on the host port `APP_PORT` (default `8000`). With `APP_PORT=8080` in `.env` the API is at http://localhost:8080.
+
+Neither mode opens a browser; open the Swagger UI by hand. It loads while startup indexing is still running, but `/api/v1/ask` answers `503 INDEX_NOT_READY` until `GET /health/ready` reports `ready`.
 
 ## Run with Docker
 
@@ -432,7 +422,5 @@ uv run mypy app                       # type check
 
 **Integration suite.** It makes real calls to Azure OpenAI, Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Configure Ollama" for the local setup).
 
-**CI.** `.github/workflows/ci.yml` runs lint, format check, type check and the offline suite on every push and pull request with Python 3.12 and no secrets. The workflow has not been executed on GitHub yet; only its YAML syntax was checked locally.
-
-Which commands were run: the offline suite (with the Azure and Gemini variables unset and no `.env`), the integration suite (all tests skipped), lint, format check and type check were all run and passed. `uv sync` was not re-run for this section.
+**CI.** `.github/workflows/ci.yml` runs lint, format check, type check and the offline suite on every push and pull request with Python 3.12 and no secrets.
 

@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -92,7 +93,7 @@ def test_success_with_sources(client: TestClient) -> None:
     body = resp.json()
     assert body["status"] == "answered"
     assert body["answer"] == "Every 60 days."
-    assert body["session_key"] is None
+    assert re.fullmatch(r"[0-9a-f]{32}", body["session_key"])  # generated
     assert 1 <= len(body["sources"]) <= 4
     for s in body["sources"]:
         assert set(s) == {"product_id", "product_name", "section", "chunk_id", "score", "snippet"}
@@ -184,7 +185,33 @@ def test_invalid_input_is_422(client: TestClient, body: dict[str, Any]) -> None:
 def test_empty_optionals_become_none_and_question_is_stripped(client: TestClient) -> None:
     resp = ask(client, question="  " + QUESTION + "  ", session_key="  ", product_id="")
     assert resp.status_code == 200
-    assert resp.json()["session_key"] is None
+    assert re.fullmatch(r"[0-9a-f]{32}", resp.json()["session_key"])  # blank key = new session
+
+
+def test_session_key_is_generated_per_new_conversation(client: TestClient) -> None:
+    first = ask(client).json()["session_key"]
+    second = ask(client).json()["session_key"]
+    assert first != second
+
+
+def test_generated_session_key_continues_the_conversation(tmp_path: Path) -> None:
+    chat = scripted()
+    with make_client(tmp_path, chat) as c:
+        wait_ready(c)
+        key = ask(c).json()["session_key"]
+        assert chat.calls_with("rewrite follow-up") == []
+        second = ask(c, question="And the KV-300?", session_key=key)
+    assert second.json()["session_key"] == key
+    assert len(chat.calls_with("rewrite follow-up")) == 1
+
+
+def test_request_without_key_ignores_earlier_history(tmp_path: Path) -> None:
+    chat = scripted()
+    with make_client(tmp_path, chat) as c:
+        wait_ready(c)
+        ask(c)
+        ask(c, question="And the KV-300?")  # no key: a new conversation, no rewrite
+    assert chat.calls_with("rewrite follow-up") == []
 
 
 @pytest.mark.parametrize(
@@ -246,7 +273,9 @@ class FakeService:
         product_id: str | None,
         request_id: str,
     ) -> QAResult:
-        return QAResult(answer=f"fake:{question}", status="no_answer", session_key=session_key)
+        return QAResult(
+            answer=f"fake:{question}", status="no_answer", session_key=session_key or "fake-key"
+        )
 
 
 def test_dependency_override_with_fake_service(client: TestClient) -> None:

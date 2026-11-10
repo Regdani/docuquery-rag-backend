@@ -23,9 +23,10 @@ OptionalText = BeforeValidator(_blank_to_none)
 
 _SESSION_KEY_DESCRIPTION = (
     "Optional client-chosen key (8-64 characters: letters, digits, '-' and '_') that links "
-    "follow-up questions. Without it no history is kept. History is stored in memory only "
-    "and is lost when the server restarts; the key is not authentication. "
-    "An empty string counts as absent."
+    "follow-up questions. Without it the server starts a new conversation and returns a "
+    "generated key in the response; send that key with the next question to continue. "
+    "History is stored in memory only and is lost when the server restarts; the key is not "
+    "authentication. An empty string counts as absent."
 )
 
 AnswerStatus = Literal["answered", "clarification_needed", "no_answer"]
@@ -92,9 +93,11 @@ class AskResponse(BaseModel):
     sources: list[Source] = Field(
         description="Chunks used for the answer; empty unless status is answered."
     )
-    session_key: str | None = Field(
-        default=None,
-        description="The session key from the request, or null when absent.",
+    session_key: str = Field(
+        description=(
+            "The session key from the request, or a newly generated one when the request had "
+            "none. Send it with the next question to continue the conversation."
+        ),
         examples=["demo-session-01"],
     )
     request_id: str = Field(

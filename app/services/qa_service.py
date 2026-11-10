@@ -1,6 +1,7 @@
 """Application logic for questions: calls the compiled graph and maps its result."""
 
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -18,8 +19,13 @@ class QAResult:
 
     answer: str
     status: str
+    session_key: str
     sources: list[Source] = field(default_factory=list)
-    session_key: str | None = None
+
+
+def new_session_key() -> str:
+    """Random, unguessable key that satisfies the request schema (32 hex characters)."""
+    return uuid.uuid4().hex
 
 
 class QAServiceProtocol(Protocol):
@@ -63,9 +69,11 @@ class QAService:
         request_id: str,
     ) -> QAResult:
         resolved = self._resolve_product(product_id) if product_id else None
+        # No key means a new conversation: generate one so the client can continue it.
+        key = session_key or new_session_key()
         state: GraphState = {
             "question": question,
-            "session_key": session_key,
+            "session_key": key,
             "product_id": resolved,
         }
         out = await self._graph.ainvoke(state)
@@ -93,4 +101,4 @@ class QAService:
                 s["chunk_id"],
                 s["score"],
             )
-        return QAResult(answer=answer, status=status, sources=sources, session_key=session_key)
+        return QAResult(answer=answer, status=status, session_key=key, sources=sources)

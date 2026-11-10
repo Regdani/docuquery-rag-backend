@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.main import create_app
 from app.memory.store import InMemorySessionStore, get_session_store, reset_session_store
 from app.rag.memory_nodes import load_history, save_history
+from app.services.qa_service import new_session_key
 
 
 def msgs(n: int) -> list[BaseMessage]:
@@ -135,9 +136,8 @@ def test_schema_strips_and_echoes() -> None:
     req = AskRequest(question="q", session_key="  abcdefgh  ")
     assert req.session_key == "abcdefgh"
     assert AskRequest(question="q").session_key is None
-    assert (
-        AskResponse(answer="a", status="no_answer", sources=[], request_id="r").session_key is None
-    )
+    with pytest.raises(ValidationError):  # the response always carries a key
+        AskResponse(answer="a", status="no_answer", sources=[], request_id="r")
 
 
 @pytest.mark.parametrize("key", ["short", "x" * 65, "bad key!!"])
@@ -150,7 +150,7 @@ def test_bad_session_key_gives_422(key: str) -> None:
             answer="ok",
             status="answered",
             sources=[],
-            session_key=body.session_key,
+            session_key=body.session_key or "generated",
             request_id="r",
         )
 
@@ -158,3 +158,10 @@ def test_bad_session_key_gives_422(key: str) -> None:
     assert client.post("/probe", json={"question": "q", "session_key": key}).status_code == 422
     ok = client.post("/probe", json={"question": "q", "session_key": "good-key_1"})
     assert ok.json()["session_key"] == "good-key_1"
+
+
+def test_new_session_key_is_valid_and_unique() -> None:
+    keys = {new_session_key() for _ in range(100)}
+    assert len(keys) == 100
+    for key in keys:
+        assert AskRequest(question="q", session_key=key).session_key == key
