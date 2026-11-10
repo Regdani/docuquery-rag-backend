@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.errors import LLMRateLimitedError, ServiceError
+from app.core.errors import LLMRateLimitedError, ServerBusyError, ServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         if isinstance(exc, LLMRateLimitedError) and "Retry-After" not in headers:
             default = request.app.state.settings.rate_limit_retry_after_seconds
             headers["Retry-After"] = str(default)
-        _log(exc.status_code, exc.message, exc.code, _request_id(request), exc)
+        if isinstance(exc, ServerBusyError):
+            # Expected overload: WARNING with the request_id, no stack trace.
+            logger.warning("%s (%s) request_id=%s", exc.message, exc.code, _request_id(request))
+        else:
+            _log(exc.status_code, exc.message, exc.code, _request_id(request), exc)
         return _respond(request, exc.status_code, exc.message, exc.code, headers)
 
     @app.exception_handler(RequestValidationError)

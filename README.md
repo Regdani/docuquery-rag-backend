@@ -159,10 +159,11 @@ Response body: `answer`, `status`, `sources`, `session_key` (the request's key o
 | 502 | `RAG_PIPELINE_ERROR` | Unexpected failure inside the question flow; generic message. It has its own code so a bug is not reported as the model being unreachable |
 | 503 | `INDEX_NOT_READY` | Indexing is running or failed |
 | 503 | `LLM_RATE_LIMITED` | Provider still rate limits after the bounded retries; carries a `Retry-After` header |
+| 503 | `SERVER_BUSY` | No model slot became free within `CONCURRENCY_WAIT_SECONDS`; carries a `Retry-After` header (see "Concurrency and scaling") |
 | 504 | `LLM_TIMEOUT` | Provider did not answer within the timeout |
 | 500 | `INTERNAL_ERROR` | Any other unhandled exception; generic message |
 
-`Retry-After` is an integer number of seconds. It is taken from the provider's `Retry-After` header when that is a number; otherwise `RATE_LIMIT_RETRY_AFTER_SECONDS` (default 5) is used.
+`Retry-After` is an integer number of seconds. For `LLM_RATE_LIMITED` it is taken from the provider's `Retry-After` header when that is a number; otherwise `RATE_LIMIT_RETRY_AFTER_SECONDS` (default 5) is used. For `SERVER_BUSY` it is `CONCURRENCY_WAIT_SECONDS` rounded up (at least 1).
 
 **Logging:** the application's logs go to stdout as `<time> <LEVEL> <logger> <message>` lines, next to uvicorn's own output. Read them in the terminal that runs uvicorn, or with `docker compose logs -f app` under Docker. `LOG_LEVEL` (`DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, default `INFO`; any other value stops startup) sets the level. Every request is logged at INFO with method, path, status, duration in milliseconds and `request_id`; health probes are logged at DEBUG so they do not flood the log. Every `4xx` is logged at WARNING with the error code, the affected field names (for `422`) and the `request_id`; the request body is not logged. Every `5xx` and every unexpected exception is logged at ERROR with the stack trace, in the log only. `clarification_needed` and `no_answer` are normal outcomes and are logged at INFO.
 
@@ -398,6 +399,70 @@ docker compose run --rm app-cloud python -m app.ingest
 
 Ollama is not started. Both app services publish port 8000, so run only one of them at a time; set `APP_PORT` in `.env` to publish another host port. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
 
+## Concurrency and scaling
+
+Every statement below is labelled **implemented** (it is in the code of this repository) or **next step** (it is not built). The service runs as one process with one event loop; scaling beyond that is described, not implemented.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAX_CONCURRENT_REQUESTS` | `8` | Most model calls (chat and query embedding) running at once in one process; must be at least 1, anything else stops startup |
+| `CONCURRENCY_WAIT_SECONDS` | `5` | How long a call waits for a free slot before the request fails with `503 SERVER_BUSY`; must be greater than 0 |
+
+### Request isolation
+
+- **Implemented:** the compiled graph, the providers, the vector store and the limiter are created once at startup and are not modified afterwards. All per-request data lives in the graph state (a new dict for every call of `QAService.ask`) and in local variables, so two requests cannot see each other's question, hits or answer.
+- **Implemented:** the only shared mutable object is `InMemorySessionStore`, a dict keyed by `session_key` and guarded by an `asyncio.Lock`. A request without a key gets a fresh random key and therefore its own history.
+- **Implemented:** errors are per request: a failed model call raises a domain error for that request only and releases its model slot, so a failure or a timeout never blocks later requests.
+
+### Parallel execution
+
+- **Implemented:** the ask route, `QAService`, every graph node and the health endpoints are `async`. Chat calls use the clients' async API (`ainvoke`). The vector search, which runs the sync query embedding and the Chroma lookup, runs in a worker thread with `asyncio.to_thread`, and so does the startup indexing, so a slow search does not stall other requests (covered by a test with a blocking search and a ticker task).
+- **Implemented:** the model-call limit is an `asyncio.Semaphore` of `MAX_CONCURRENT_REQUESTS` slots, created once and shared by all requests (`app/rag/limiter.py`). The slot is taken around each chat call and around the retrieval step, not around the whole request, so cheap work (history, formatting) never waits for a slot. A request makes two to four such calls in sequence (condense when there is history, assess, retrieve, then generate or clarify), so under load it can wait for a slot more than once.
+- **Implemented:** retries happen while the slot is held. The bounded 429 retry (`MAX_RETRIES`, exponential backoff from `RETRY_BACKOFF_SECONDS`) sits inside the call, so a rate-limited call keeps its slot during the backoff. This keeps the number of calls against the provider bounded by the slot count; the cost is that a long backoff reduces the free slots.
+- **Implemented:** a call that cannot get a slot within `CONCURRENCY_WAIT_SECONDS` fails with `503 SERVER_BUSY`, a `Retry-After` header and the unified error body. It is logged at WARNING with the `request_id` and no stack trace. The response arrives after about the wait limit, not after the model timeout.
+- **Next step:** run several uvicorn workers or instances (see below); queue requests instead of rejecting them; stream answers.
+
+### Resource limits
+
+- **Implemented:** every external call has a timeout from Settings: the chat client (`LLM_TIMEOUT_SECONDS`), the embeddings client (`EMBEDDING_TIMEOUT_SECONDS`) and the optional LLM health check (`HEALTH_LLM_TIMEOUT_SECONDS`). The model-slot wait is bounded by `CONCURRENCY_WAIT_SECONDS`, the question length by `MAX_QUESTION_LENGTH`, the retrieved chunks by `RETRIEVAL_TOP_K` and the history per session by `HISTORY_MAX_MESSAGES`.
+- **Implemented:** retries are bounded (`MAX_RETRIES`, only for HTTP 429 and only for Gemini; Ollama is not retried).
+- **Implemented:** the limit is per process. With Ollama the limit protects a single machine: a local model on a CPU serves roughly one generation at a time, so a small value (1 to 2) gives lower latency per request than a large one.
+- **Not bounded (known limit):** the number of sessions in memory, and the default worker thread pool of the event loop used by `asyncio.to_thread`. Requests that wait for a slot are held as open connections.
+- **Next step:** rate limiting per client or per `session_key`, a bound and an expiry for sessions, a limit on the number of waiting requests.
+
+### Multiple application instances
+
+- **Implemented (current behaviour):** nothing is shared between processes. Each instance has its own model-slot limit and its own session history, and builds its own index at startup.
+- **Session history:** it is in memory, lost on restart and not shared, so a follow-up sent to another instance starts with an empty history. **Next step:** keep the history in Redis (with a TTL) behind the same get/save interface. **Interim solution (deployment only):** sticky sessions, routing by `session_key` (for example hash-based routing at the load balancer) so that a conversation always reaches the same instance; a restart still loses it.
+- **Startup indexing:** every instance builds the index at startup and writes `./data/index` (embedded Chroma). Instances sharing one directory would write to it concurrently, and instances with separate directories repeat the embedding work. **Next step:** a separate ingest job that builds the index once, and a shared vector store (Chroma in server mode or another server-based store) that the instances only read.
+- **Next step:** a shared limit across instances (for example a token bucket in Redis) if the provider's rate limit is per API key; until then, size `MAX_CONCURRENT_REQUESTS` per instance so that instances times slots stays under the provider's limit.
+
+### Bottlenecks, metrics and roadmap
+
+- **Bottleneck 1, the model.** Chat latency dominates a request (seconds on Gemini, several seconds to tens of seconds for a small local model on a CPU). The slot limit and the timeouts bound it; they do not make it faster.
+- **Bottleneck 2, one process.** Python code outside the model calls shares one event loop, and the embedded Chroma index is opened by one process.
+- **Bottleneck 3, the provider limits.** Gemini returns 429 when the quota is exceeded; a local Ollama is limited by the machine's CPU, GPU and memory.
+- **Implemented:** logs only. Each request logs its status and duration with the `request_id`, and each error logs its `code`.
+- **Next step, metrics to collect:** LLM latency (p50, p95), slot wait time and the number of requests waiting for a slot, error rate by `code` (`SERVER_BUSY`, `LLM_TIMEOUT`, `LLM_RATE_LIMITED`, ...), token usage per request (cost), retrieval latency, and the share of `no_answer` and `clarification_needed` answers. They would be exported through a metrics endpoint (for example Prometheus format).
+- **Next step, roadmap in this order:** (1) the metrics above, to see the real bottleneck; (2) session history in Redis; (3) a separate ingest job and a shared or server-mode vector store; (4) several instances behind a load balancer, sticky by `session_key` until the history is shared; (5) per-client rate limiting; (6) a shared limit across instances and a bounded wait queue; (7) streaming answers.
+
+### Load probe
+
+`scripts/load_probe.py` sends a number of questions in parallel (asyncio and httpx) and prints the status counts and latencies:
+
+```bash
+uv run python scripts/load_probe.py --url http://localhost:8000 --concurrency 20
+```
+
+Measured result (implemented, and run once): the application with fake providers where every model call takes 0.5 s, `MAX_CONCURRENT_REQUESTS=4` and `CONCURRENCY_WAIT_SECONDS=1`, on a development laptop. This shows the limiter, not the speed of a real model.
+
+| Concurrency | Total time | Status counts | Latency (min / median / p95 / max) |
+|---|---|---|---|
+| 2 | 1.35 s | `200`: 2 | 1.30 / 1.32 / 1.35 / 1.35 s |
+| 20 | 2.43 s | `200`: 8, `503 SERVER_BUSY`: 12 | 1.35 / 1.35 / 2.43 / 2.43 s |
+
+With 20 parallel requests the slots fill up, the requests that do not get a slot within the wait limit are rejected with `503` and the rest finish normally. Run it against your own setup (real provider, your `.env`) to get numbers for it.
+
 ## Testing
 
 ```bash
@@ -415,6 +480,7 @@ uv run mypy app                       # type check
 - invalid input (422 in the unified error body);
 - no relevant hits, both when every score is below the threshold and when retrieval returns zero documents (status `no_answer`, no generation call, empty sources);
 - model error, rate limit and model timeout (502, 503, 504 with `code` and `request_id`);
+- concurrency: a blocking search does not stall the event loop, peak model concurrency stays within `MAX_CONCURRENT_REQUESTS`, a saturated limiter gives `503 SERVER_BUSY` with `Retry-After`, and slots are released after failures;
 - embedding failure or timeout during retrieval.
 
 **Integration suite.** It makes real calls to Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Configure Ollama" for the local setup).

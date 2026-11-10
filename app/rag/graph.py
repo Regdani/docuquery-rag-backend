@@ -20,6 +20,7 @@ from langgraph.graph.state import CompiledStateGraph
 from app.core.config import Settings
 from app.core.errors import RAGPipelineError, ServiceError
 from app.memory.store import InMemorySessionStore
+from app.rag.limiter import ModelCallLimiter
 from app.rag.memory_nodes import load_history, save_history
 from app.rag.prompts import (
     ANSWER_SYSTEM,
@@ -121,12 +122,23 @@ def build_graph(
     vector_store: VectorStore,
     store: InMemorySessionStore,
     settings: Settings,
+    limiter: ModelCallLimiter | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
-    """Compile the graph. Everything is passed in; no globals are read or written."""
+    """Compile the graph. Everything is passed in; no globals are read or written.
+
+    Every chat call and the retrieval (query embedding + search) run inside one slot of the
+    shared `limiter`; retries of the provider wrappers happen while the slot is held.
+    """
+    limit = limiter or ModelCallLimiter.from_settings(settings)
     top_k = settings.retrieval_top_k
     snippet_max = settings.snippet_max_chars
     threshold = settings.retrieval_relevance_threshold
     max_log = settings.log_question_max_chars
+
+    async def _chat(messages: list[BaseMessage]) -> str:
+        async with limit.slot():
+            reply = await chat_model.ainvoke(messages)
+        return _text(reply.content)
 
     async def _load(state: GraphState) -> dict[str, Any]:
         return await load_history(store, state)
@@ -140,19 +152,17 @@ def build_graph(
         if not history:
             return {"standalone_question": question}
         prompt = f"Conversation:\n{_transcript(history)}\n\nFollow-up question: {question}"
-        reply = await chat_model.ainvoke(
-            [SystemMessage(content=CONDENSE_SYSTEM), HumanMessage(content=prompt)]
-        )
-        return {"standalone_question": _text(reply.content).strip() or question}
+        reply = await _chat([SystemMessage(content=CONDENSE_SYSTEM), HumanMessage(content=prompt)])
+        return {"standalone_question": reply.strip() or question}
 
     async def assess(state: GraphState) -> dict[str, Any]:
-        reply = await chat_model.ainvoke(
+        reply = await _chat(
             [
                 SystemMessage(content=ASSESS_SYSTEM),
                 HumanMessage(content=state["standalone_question"]),
             ]
         )
-        clear = parse_clear(_text(reply.content))
+        clear = parse_clear(reply)
         logger.info("Question assessed as %s", "clear" if clear else "unclear")
         return {"status": "" if clear else STATUS_CLARIFICATION}
 
@@ -160,14 +170,14 @@ def build_graph(
         return "clarify" if state.get("status") == STATUS_CLARIFICATION else "retrieve"
 
     async def clarify(state: GraphState) -> dict[str, Any]:
-        reply = await chat_model.ainvoke(
+        reply = await _chat(
             [
                 SystemMessage(content=CLARIFY_SYSTEM),
                 HumanMessage(content=state["standalone_question"]),
             ]
         )
         return {
-            "answer": _text(reply.content).strip(),
+            "answer": reply.strip(),
             "status": STATUS_CLARIFICATION,
             "sources": [],
         }
@@ -177,11 +187,12 @@ def build_graph(
         product_id = state.get("product_id")
         if product_id:
             kwargs["filter"] = {"product_id": product_id}
-        pairs = await asyncio.to_thread(
-            vector_store.similarity_search_with_relevance_scores,
-            state["standalone_question"],
-            **kwargs,
-        )
+        async with limit.slot():
+            pairs = await asyncio.to_thread(
+                vector_store.similarity_search_with_relevance_scores,
+                state["standalone_question"],
+                **kwargs,
+            )
         return {"hits": [Hit(document=doc, score=float(score)) for doc, score in pairs]}
 
     def route_retrieve(state: GraphState) -> str:
@@ -190,13 +201,13 @@ def build_graph(
     async def generate(state: GraphState) -> dict[str, Any]:
         used = relevant_hits(state, threshold)
         context = "\n\n---\n\n".join(h["document"].page_content for h in used)
-        reply = await chat_model.ainvoke(
+        reply = await _chat(
             [
                 SystemMessage(content=ANSWER_SYSTEM.format(context=context)),
                 HumanMessage(content=state["standalone_question"]),
             ]
         )
-        return {"answer": _text(reply.content).strip()}
+        return {"answer": reply.strip()}
 
     async def no_answer(state: GraphState) -> dict[str, Any]:
         return {"answer": NO_ANSWER_TEXT, "status": STATUS_NO_ANSWER, "sources": []}

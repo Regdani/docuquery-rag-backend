@@ -167,10 +167,13 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
     },
     503: {
         "model": ErrorResponse,
-        "description": "The index is not ready, or the provider is still rate limiting.",
+        "description": (
+            "The index is not ready, the provider is still rate limiting, or the server is busy "
+            "(no model slot became free within the wait limit)."
+        ),
         "headers": {
             "Retry-After": {
-                "description": "Seconds to wait before retrying (LLM_RATE_LIMITED).",
+                "description": "Seconds to wait before retrying (LLM_RATE_LIMITED, SERVER_BUSY).",
                 "schema": {"type": "integer", "examples": [5]},
             }
         },
@@ -182,6 +185,13 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
                         _error(
                             "INDEX_NOT_READY",
                             "The document index is still being built; retry shortly.",
+                        ),
+                    ),
+                    "server_busy": _example(
+                        "Too many concurrent questions (Retry-After header set)",
+                        _error(
+                            "SERVER_BUSY",
+                            "The server is busy: no model slot became free in time; retry shortly.",
                         ),
                     ),
                     "llm_rate_limited": _example(

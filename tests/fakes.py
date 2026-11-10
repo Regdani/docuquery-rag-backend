@@ -1,5 +1,7 @@
 """Test-only doubles built on langchain-core."""
 
+import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -10,6 +12,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.vectorstores import InMemoryVectorStore
 
 __all__ = [
+    "BlockingVectorStore",
+    "SlowChatModel",
     "DeterministicFakeEmbedding",
     "FakeListChatModel",
     "FlakyChatModel",
@@ -125,6 +129,76 @@ class EmptyRetrievalVectorStore(RelevanceVectorStore):
     def similarity_search_with_score(self, query: str, k: int = 4, **kwargs: Any) -> Any:
         self.queries.append(query)
         return []
+
+
+class SlowChatModel(BaseChatModel):
+    """Async chat model that records how many calls run at once (`peak`).
+
+    Each call waits for `gate` (an asyncio.Event) when one is set, then `delay` seconds.
+    `error`, when set, is raised instead of answering. Replies come from `responder(messages)`.
+    """
+
+    responder: Any = None
+    delay: float = 0.0
+    gate: Any = None
+    error: Any = None
+    running: int = 0
+    peak: int = 0
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "slow"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        raise NotImplementedError("async only")
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.calls += 1
+        self.running += 1
+        self.peak = max(self.peak, self.running)
+        try:
+            if self.gate is not None:
+                await self.gate.wait()
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            if self.error is not None:
+                raise self.error
+            reply = self.responder(messages)
+        finally:
+            self.running -= 1
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=reply))])
+
+
+class BlockingVectorStore(RelevanceVectorStore):
+    """Store whose search blocks its thread for `block_seconds` and records peak concurrency."""
+
+    def __init__(self, embedding: Embeddings, block_seconds: float = 0.2) -> None:
+        super().__init__(embedding)
+        self.block_seconds = block_seconds
+        self.running = 0
+        self.peak = 0
+
+    def similarity_search_with_score(self, query: str, k: int = 4, **kwargs: Any) -> Any:
+        self.running += 1
+        self.peak = max(self.peak, self.running)
+        try:
+            time.sleep(self.block_seconds)  # a blocking call: must not run on the event loop
+            return super().similarity_search_with_score(query, k=k, **kwargs)
+        finally:
+            self.running -= 1
 
 
 class FailingQueryEmbeddings(Embeddings):

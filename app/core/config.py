@@ -68,7 +68,14 @@ class Settings(BaseSettings):
         ge=1,
         description="Retry-After value sent with 503 LLM_RATE_LIMITED when the provider gave none.",
     )
-    max_concurrent_requests: int = 8
+    max_concurrent_requests: int = Field(
+        default=8, ge=1, description="Most model calls (chat, query embedding) running at once."
+    )
+    concurrency_wait_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="How long a request waits for a free model slot before it gets 503.",
+    )
     history_max_messages: int = Field(
         default=20, ge=1, description="Most recent messages kept per session."
     )

@@ -28,6 +28,7 @@ from app.providers.factory import (
 from app.rag.graph import build_graph
 from app.rag.index_status import IndexStatus
 from app.rag.indexing import run_indexing
+from app.rag.limiter import ModelCallLimiter
 from app.services.qa_service import QAService
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,13 @@ def create_app(
         app.state.embeddings = emb
         app.state.vector_store = store
         app.state.index_status = IndexStatus(state="indexing", embedding_model=model_name)
-        app.state.graph = build_graph(chat, store, session_store, resolved)
+        app.state.limiter = ModelCallLimiter.from_settings(resolved)
+        logger.info(
+            "Model calls limited to %d at once; a request waits at most %.1fs for a slot",
+            resolved.max_concurrent_requests,
+            resolved.concurrency_wait_seconds,
+        )
+        app.state.graph = build_graph(chat, store, session_store, resolved, app.state.limiter)
         app.state.qa_service = QAService(
             app.state.graph,
             lambda: app.state.index_status,

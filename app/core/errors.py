@@ -73,6 +73,18 @@ class LLMRateLimitedError(ServiceError):
         super().__init__(message, code="LLM_RATE_LIMITED", status_code=503, headers=headers)
 
 
+class ServerBusyError(ServiceError):
+    """Raised when no model slot became free within the wait limit (fast 503 with Retry-After)."""
+
+    def __init__(self, message: str, retry_after: int = 1) -> None:
+        super().__init__(
+            message,
+            code="SERVER_BUSY",
+            status_code=503,
+            headers={"Retry-After": str(max(1, retry_after))},
+        )
+
+
 class LLMEmptyResponseError(ServiceError):
     """Raised when the model returned an empty answer."""
 
