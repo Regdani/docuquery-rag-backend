@@ -30,7 +30,6 @@ class QAServiceProtocol(Protocol):
         question: str,
         *,
         session_key: str | None,
-        top_k: int | None,
         product_id: str | None,
         request_id: str,
     ) -> QAResult: ...
@@ -60,7 +59,6 @@ class QAService:
         question: str,
         *,
         session_key: str | None,
-        top_k: int | None,
         product_id: str | None,
         request_id: str,
     ) -> QAResult:
@@ -68,7 +66,6 @@ class QAService:
         state: GraphState = {
             "question": question,
             "session_key": session_key,
-            "top_k": top_k,
             "product_id": resolved,
         }
         out = await self._graph.ainvoke(state)

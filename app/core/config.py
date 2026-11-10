@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     # Chunking and retrieval
     chunk_size: int = 800
     chunk_overlap: int = 100
-    retrieval_top_k: int = 4
+    retrieval_top_k: int = Field(
+        default=4, ge=1, le=20, description="Number of chunks retrieved per question (1..20)."
+    )
     retrieval_relevance_threshold: float = Field(
         default=0.3,
         ge=0.0,

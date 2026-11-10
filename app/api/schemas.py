@@ -12,9 +12,6 @@ SessionKey = Annotated[
     ),
 ]
 
-TOP_K_MIN = 1
-TOP_K_MAX = 20
-
 
 def _blank_to_none(value: Any) -> Any:
     if isinstance(value, str) and not value.strip():
@@ -46,16 +43,6 @@ class AskRequest(BaseModel):
     )
     session_key: Annotated[SessionKey | None, OptionalText] = Field(
         default=None, description=_SESSION_KEY_DESCRIPTION, examples=["demo-session-01"]
-    )
-    top_k: int | None = Field(
-        default=None,
-        ge=TOP_K_MIN,
-        le=TOP_K_MAX,
-        description=(
-            f"Number of chunks to retrieve for this request only ({TOP_K_MIN}-{TOP_K_MAX}). "
-            "Defaults to the server setting."
-        ),
-        examples=[4],
     )
     product_id: Annotated[str | None, OptionalText] = Field(
         default=None,

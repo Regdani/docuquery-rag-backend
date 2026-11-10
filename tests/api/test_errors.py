@@ -58,15 +58,12 @@ def raw(client: TestClient, content: str) -> Any:
     [
         ({}, "question"),
         ({"question": 123}, "question"),
-        ({"question": "x", "top_k": "x"}, "top_k"),
         ({"question": ""}, "question"),
         ({"question": "   \n "}, "question"),
         ({"question": "x" * 1001}, "question"),
         ({"question": "x", "session_key": "short"}, "session_key"),
         ({"question": "x", "session_key": "k" * 65}, "session_key"),
         ({"question": "x", "session_key": "bad key with spaces!"}, "session_key"),
-        ({"question": "x", "top_k": 0}, "top_k"),
-        ({"question": "x", "top_k": 21}, "top_k"),
     ],
 )
 def test_invalid_requests_are_422_in_unified_shape(

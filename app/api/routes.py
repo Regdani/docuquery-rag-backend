@@ -38,7 +38,6 @@ _REQUEST_EXAMPLES: dict[str, Any] = {
         "value": {
             "question": "How do I descale it?",
             "product_id": "KV-200",
-            "top_k": 4,
         },
     },
 }
@@ -116,7 +115,7 @@ _RESPONSES: dict[int | str, dict[str, Any]] = {
         "model": ErrorResponse,
         "description": (
             "Invalid request: missing or wrong-typed field, malformed JSON, blank or too long "
-            "question, bad session_key, top_k out of range. Checked before the index state."
+            "question, bad session_key. Checked before the index state."
         ),
         "content": {
             "application/json": {
@@ -225,7 +224,6 @@ async def ask(
     result = await service.ask(
         body.question,
         session_key=body.session_key,
-        top_k=body.top_k,
         product_id=body.product_id,
         request_id=request_id,
     )

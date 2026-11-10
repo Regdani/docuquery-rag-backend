@@ -87,35 +87,43 @@ def test_graph_and_service_built_once_on_app_state(client: TestClient) -> None:
 
 
 def test_success_with_sources(client: TestClient) -> None:
-    resp = ask(client, top_k=5)
+    resp = ask(client)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "answered"
     assert body["answer"] == "Every 60 days."
     assert body["session_key"] is None
-    assert 1 <= len(body["sources"]) <= 5
+    assert 1 <= len(body["sources"]) <= 4
     for s in body["sources"]:
         assert set(s) == {"product_id", "product_name", "section", "chunk_id", "score", "snippet"}
         assert 0.0 <= s["score"] <= 1.0
 
 
-def test_top_k_applies_per_request(client: TestClient) -> None:
-    assert len(ask(client, top_k=1).json()["sources"]) == 1
-    assert len(ask(client, top_k=3).json()["sources"]) == 3
-    assert len(ask(client).json()["sources"]) == 4  # server default again
+def test_retrieval_top_k_comes_from_settings(tmp_path: Path) -> None:
+    with make_client(tmp_path, retrieval_top_k=2) as c:
+        wait_ready(c)
+        assert len(ask(c).json()["sources"]) == 2
+
+
+def test_top_k_in_request_body_is_ignored(client: TestClient) -> None:
+    resp = ask(client, top_k=1)
+    assert resp.status_code == 200
+    assert len(resp.json()["sources"]) == 4  # server default, not the body value
 
 
 def test_snippet_is_capped(tmp_path: Path) -> None:
     with make_client(tmp_path, snippet_max_chars=40) as c:
         wait_ready(c)
-        sources = ask(c, top_k=5).json()["sources"]
+        sources = ask(c).json()["sources"]
     assert sources and all(0 < len(s["snippet"]) <= 40 for s in sources)
 
 
-def test_product_filter(client: TestClient) -> None:
-    everything = {s["product_id"] for s in ask(client, top_k=20).json()["sources"]}
+def test_product_filter(tmp_path: Path) -> None:
+    with make_client(tmp_path, retrieval_top_k=20) as c:
+        wait_ready(c)
+        everything = {s["product_id"] for s in ask(c).json()["sources"]}
+        scoped = ask(c, product_id="KV-200").json()
     assert len(everything) > 1
-    scoped = ask(client, top_k=20, product_id="KV-200").json()
     assert scoped["sources"]
     assert {s["product_id"] for s in scoped["sources"]} == {"KV-200"}
 
@@ -166,8 +174,6 @@ def test_follow_up_uses_history(tmp_path: Path) -> None:
         {},
         {"question": ""},
         {"question": "   \n "},
-        {"question": "x", "top_k": 0},
-        {"question": "x", "top_k": 21},
         {"question": "x", "session_key": "short"},
     ],
 )
@@ -237,7 +243,6 @@ class FakeService:
         question: str,
         *,
         session_key: str | None,
-        top_k: int | None,
         product_id: str | None,
         request_id: str,
     ) -> QAResult:

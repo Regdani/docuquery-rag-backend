@@ -123,7 +123,7 @@ def build_graph(
     settings: Settings,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Compile the graph. Everything is passed in; no globals are read or written."""
-    default_top_k = settings.retrieval_top_k
+    top_k = settings.retrieval_top_k
     snippet_max = settings.snippet_max_chars
     threshold = settings.retrieval_relevance_threshold
     max_log = settings.log_question_max_chars
@@ -173,7 +173,7 @@ def build_graph(
         }
 
     async def retrieve(state: GraphState) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"k": state.get("top_k") or default_top_k}
+        kwargs: dict[str, Any] = {"k": top_k}
         product_id = state.get("product_id")
         if product_id:
             kwargs["filter"] = {"product_id": product_id}

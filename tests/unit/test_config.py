@@ -1,8 +1,9 @@
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import Settings
 
-KEYS = ["LLM_PROVIDER", "EMBEDDING_PROVIDER", "OLLAMA_BASE_URL"]
+KEYS = ["LLM_PROVIDER", "EMBEDDING_PROVIDER", "OLLAMA_BASE_URL", "RETRIEVAL_TOP_K"]
 
 
 @pytest.fixture(autouse=True)
@@ -41,3 +42,20 @@ def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     s = make()
     assert (s.llm_provider, s.embedding_provider) == ("azure", "ollama")
     assert s.ollama_base_url == "http://example:1234"
+
+
+def test_retrieval_top_k_default() -> None:
+    assert make().retrieval_top_k == 4
+
+
+@pytest.mark.parametrize("value", ["1", "20"])
+def test_retrieval_top_k_accepts_bounds(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("RETRIEVAL_TOP_K", value)
+    assert make().retrieval_top_k == int(value)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "21", "abc"])
+def test_retrieval_top_k_rejects_invalid(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("RETRIEVAL_TOP_K", value)
+    with pytest.raises(ValidationError, match="retrieval_top_k"):
+        make()

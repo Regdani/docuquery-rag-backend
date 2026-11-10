@@ -56,7 +56,7 @@ Settings: `DATA_DIR`, `INDEX_DIR`, `CHROMA_COLLECTION`, `CHUNK_SIZE` and `CHUNK_
 
 ### Chunking
 
-Each manual is split along its `## ` sections, and every section is split on its own with a recursive character splitter (`CHUNK_SIZE`, `CHUNK_OVERLAP`). Text is never merged across sections, so a chunk answers from exactly one part of one manual (for example "Maintenance" of the KV-200). Every chunk carries metadata: source file, product ID and name (parsed from the `# <ID> – <name>` title) and section title, plus a stable, unique chunk ID. These are the fields the answer later reports as its sources. The chunk text starts with a short `<ID> <name> - <section>` line so similar products (KV-200 and KV-300) stay distinguishable. Files without the title heading are logged and skipped.
+Each manual is split along its `## ` sections, and every section is split on its own with a recursive character splitter (`CHUNK_SIZE`, `CHUNK_OVERLAP`). A section is a Markdown level-2 heading (`## Maintenance`) and runs until the next one; the heading text becomes the section title, and any text before the first `##` is the introduction. Only exactly two `#` start a section: the `#` title and `###` sub-headings stay inside the surrounding text. Text is never merged across sections, so a chunk answers from exactly one part of one manual (for example "Maintenance" of the KV-200). Every chunk carries metadata: source file, product ID and name (parsed from the `# <ID> – <name>` title) and section title, plus a stable, unique chunk ID. These are the fields the answer later reports as its sources. The chunk text starts with a short `<ID> <name> - <section>` line so similar products (KV-200 and KV-300) stay distinguishable. Files without the title heading are logged and skipped.
 
 ### Vector store
 
@@ -102,7 +102,7 @@ flowchart TD
 - `condense`: with history, one LLM call rewrites a follow-up into a standalone question; without history it makes no LLM call.
 - `assess`: one LLM call decides whether the question is clear enough to search. If the answer cannot be parsed, the question is treated as clear so retrieval still runs.
 - `clarify`: the LLM asks one targeted clarifying question (`status: clarification_needed`); retrieval and generation are skipped.
-- `retrieve`: fetches the top `RETRIEVAL_TOP_K` chunks with relevance scores (0 to 1). If at least one score reaches `RETRIEVAL_RELEVANCE_THRESHOLD` the flow continues with `generate`, otherwise with `no_answer`.
+- `retrieve`: fetches the top `RETRIEVAL_TOP_K` chunks (server setting, 1 to 20; an out-of-range value stops startup) with relevance scores (0 to 1). If at least one score reaches `RETRIEVAL_RELEVANCE_THRESHOLD` the flow continues with `generate`, otherwise with `no_answer`.
 - `generate`: answers from the chunks at or above the threshold only, and says so when the context does not contain the answer.
 - `no_answer`: a fixed "no relevant information" reply (`status: no_answer`, no sources, no LLM call).
 - `format`: sets `status: answered` and the sources (product ID and name, section, source file, chunk ID, relevance score, snippet) of the chunks used, and logs them.
@@ -120,8 +120,7 @@ Request body:
 |---|---|---|
 | `question` | yes | The question. Whitespace is trimmed; a blank question is a `422`. |
 | `session_key` | no | 8-64 characters (letters, digits, `-`, `_`) linking follow-up questions. An empty string counts as absent. |
-| `top_k` | no | Chunks to retrieve for this request only, from 1 to 20 (otherwise `422`). Defaults to `RETRIEVAL_TOP_K`. |
-| `product_id` | no | Restricts retrieval to one product's manual (for example `KV-200`). An empty string counts as absent. |
+| `product_id` | no | Restricts retrieval to one product's manual (for example `KV-200`). Applied as a metadata filter on the shared index; without it, retrieval searches all manuals. An empty string counts as absent. |
 
 Response body: `answer`, `status`, `sources`, `session_key` and `request_id`. Each source has `product_id`, `product_name`, `section`, `chunk_id`, `score` (0 to 1) and a `snippet` capped at `SNIPPET_MAX_CHARS`.
 
@@ -135,7 +134,7 @@ Response body: `answer`, `status`, `sources`, `session_key` and `request_id`. Ea
 
 **Check order:** the request body is validated first (`422`), then the index guard runs (`503 INDEX_NOT_READY`). A malformed request is wrong whatever the index state, so while indexing is running or has failed an invalid request still gets a `422` and a valid one gets the `503`.
 
-**Invalid vs unclear:** a technically invalid request (missing or wrong-typed field, malformed JSON, blank question, question longer than `MAX_QUESTION_LENGTH`, bad `session_key`, `top_k` out of range) is a `422`. A well-formed but unclear question (for example "My machine doesn't work.") is not an error: it returns `200` with `status: clarification_needed` and the clarifying question as `answer`. With a `session_key` the next question is interpreted together with the stored history.
+**Invalid vs unclear:** a technically invalid request (missing or wrong-typed field, malformed JSON, blank question, question longer than `MAX_QUESTION_LENGTH`, bad `session_key`) is a `422`. A well-formed but unclear question (for example "My machine doesn't work.") is not an error: it returns `200` with `status: clarification_needed` and the clarifying question as `answer`. With a `session_key` the next question is interpreted together with the stored history.
 
 **Errors** always use the body `{"detail", "code", "request_id"}`; `detail` is a readable string and never contains a stack trace or internal exception text. A `422` adds `errors`, a list of `{"field", "message", "type"}` items; the submitted values are not echoed. Example:
 
@@ -182,10 +181,10 @@ curl -s -X POST http://localhost:8000/api/v1/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "And the KV-300?", "session_key": "demo-session-01"}'
 
-# Restricted to one product, with a custom number of chunks
+# Restricted to one product
 curl -s -X POST http://localhost:8000/api/v1/ask \
   -H "Content-Type: application/json" \
-  -d '{"question": "How do I descale it?", "product_id": "KV-200", "top_k": 6}'
+  -d '{"question": "How do I descale it?", "product_id": "KV-200"}'
 ```
 
 Example response:
