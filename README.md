@@ -9,25 +9,23 @@ DocuQuery is an HTTP API (FastAPI) that answers natural-language questions about
 - [Project structure](#project-structure)
 - [Architecture and design decisions](#architecture-and-design-decisions)
 - [Question flow](#question-flow)
-- [Installation](#installation)
 - [Data preparation](#data-preparation)
 - [Sample data](#sample-data)
 - [Indexing](#indexing)
-- [Running](#running)
 - [Ask endpoint](#ask-endpoint)
 - [Health endpoints](#health-endpoints)
 - [Conversation history](#conversation-history)
 - [Model providers](#model-providers)
 - [Primary model (Gemini)](#primary-model-gemini)
 - [Local alternative (Ollama)](#local-alternative-ollama)
-- [Run with Docker](#run-with-docker)
+- [Docker setup](#docker-setup)
 - [Concurrency and scaling](#concurrency-and-scaling)
 - [Tests](#tests)
 - [Known limitations and next steps](#known-limitations-and-next-steps)
 
 ## Problem and features
 
-A large webshop sells household and DIY appliances, and every product comes with a user manual. These manuals run to many pages, so customers and customer support agents struggle to find specific answers in them. The target users are customers before a purchase, who compare product features and technical data; customers after a purchase, who turn to the manual with questions about usage, maintenance or troubleshooting; and customer support agents, who want to give accurate answers quickly. DocuQuery is an HTTP API that the webshop's search box can be built on. Users ask their question in natural language, for example: "How often should I descale the KV-200 coffee maker?" The system answers from the relevant passages of the manuals rather than from a manual as a whole. The answer also names its source, meaning the product and the manual section. This lets users verify the answer without having to read the entire document.
+A large webshop sells household and DIY appliances, and every product comes with a user manual. These manuals run to many pages, so customers and customer support agents struggle to find specific answers in them. The target users are customers before a purchase, who compare product features and technical data; customers after a purchase, who turn to the manual with questions about usage, maintenance or troubleshooting; and customer support agents, who want to give accurate answers quickly. DocuQuery is an HTTP API that an AI assistant on the webshop's pages can be built on, helping customers get answers to their questions. Users ask their question in natural language, for example: "How often should I descale the KV-200 coffee maker?" The system answers from the relevant passages of the manuals rather than from a manual as a whole. The answer also names its source, meaning the product and the manual section. This lets users verify the answer without having to read the entire document.
 
 ### Features
 
@@ -53,38 +51,51 @@ A large webshop sells household and DIY appliances, and every product comes with
 
 ### Capabilities and limits of the prototype
 
-The prototype answers questions about a small set of fictional sample manuals through an API, with in-memory history and an embedded vector store. It is a single-process service that shows the design; it is not meant to carry production traffic. The full list of limits is in "Known limitations and next steps".
-
-What the prototype does not do:
-
-- Answers come exclusively from the user manuals.
-- Price, stock, orders and product recommendations are not part of the application.
-- The webshop's search interface (UI) is out of scope; the prototype provides only the API.
-- There is no authentication.
-- There is no quality measurement (answer quality is not evaluated).
-- Conversation history is kept per `session_key`, in memory only, and is lost on restart.
-
-See "Known limitations and next steps" for the complete list.
+The prototype answers questions about a small set of fictional sample manuals through an API, with in-memory history and an embedded vector store. It is a single-process service that shows the design; it is not meant to carry production traffic. Its limits are listed in "Known limitations and next steps".
 
 ## Quick start
 
-The fastest path from a clone to a first answer uses the free local mode with Ollama (no account or key). Details for every step are in the sections that follow.
+Every way to start the application is described here: locally or in Docker, with the free local models (Ollama) or with Gemini. The later sections explain the design and the settings and do not repeat these steps.
 
-1. Install Python 3.12, [uv](https://docs.astral.sh/uv/) and [Ollama](https://ollama.com/download).
-2. Clone the repository, install the dependencies and copy the configuration (`.env.example` already holds the Ollama values):
+### Prerequisites
 
-   ```bash
-   git clone https://github.com/Regdani/docuquery-rag-backend.git
-   cd docuquery-rag-backend
-   uv sync
-   cp .env.example .env
-   ```
+- Python 3.12 (uv installs it for you if it is missing) and [uv](https://docs.astral.sh/uv/) as the package manager
+- For local mode: [Ollama](https://ollama.com/download) (Windows, macOS, Linux); for cloud mode: a Google AI Studio API key
+- For the Docker setups: Docker with Compose (Python, uv and Ollama are then not needed on the host)
 
-3. Pull the two models (a one-time download of about 2.3 GB, so this needs internet access) and make sure Ollama is running:
+### 1. Get the code and the configuration
+
+```bash
+git clone https://github.com/Regdani/docuquery-rag-backend.git
+cd docuquery-rag-backend
+uv sync
+cp .env.example .env
+```
+
+`uv sync` installs the exact versions pinned in `uv.lock` (the Docker setups do not need it). `.env.example` contains names and safe defaults only, no secrets, and is set up for local mode; the rest of the file (paths, chunking, retrieval, timeouts, limits, logging) documents every other setting with its default. `.env` is git-ignored, so `GOOGLE_API_KEY` goes only there.
+
+Then pick one of the four setups below.
+
+### 2a. Local mode (Ollama)
+
+No account, no key, no cost. The first model download needs an internet connection; after that the mode works offline.
+
+1. Pull the two models (a one-time download of about 2.3 GB):
 
    ```bash
    ollama pull llama3.2:3b
    ollama pull nomic-embed-text
+   ```
+
+2. Make sure the Ollama server is running. The desktop installers start it automatically; otherwise run `ollama serve`. It listens on `http://localhost:11434`.
+3. Check `.env` (a copy of `.env.example` already contains these values):
+
+   ```env
+   LLM_PROVIDER=ollama
+   EMBEDDING_PROVIDER=ollama
+   EMBEDDING_MODEL=nomic-embed-text
+   OLLAMA_BASE_URL=http://localhost:11434
+   OLLAMA_CHAT_MODEL=llama3.2:3b
    ```
 
 4. Build the index and start the server:
@@ -94,15 +105,74 @@ The fastest path from a clone to a first answer uses the free local mode with Ol
    uv run uvicorn app.main:app --reload
    ```
 
-5. Ask a question (in another terminal) or open http://localhost:8000/docs:
+### 2b. Cloud mode (Gemini)
 
-   ```bash
-   curl -s -X POST http://localhost:8000/api/v1/ask \
-     -H "Content-Type: application/json" \
-     -d '{"question": "What are the maximum speed and the power of the DR-450 impact drill?"}'
+1. Create an API key in Google AI Studio and set these values in `.env`:
+
+   ```env
+   LLM_PROVIDER=gemini
+   EMBEDDING_PROVIDER=gemini
+   EMBEDDING_MODEL=gemini-embedding-001
+   GOOGLE_API_KEY=<key>
+   GEMINI_CHAT_MODEL=gemini-3.1-flash-lite
    ```
 
-To use Gemini instead, see "Primary model (Gemini)"; to run everything in containers, see "Run with Docker".
+2. Build the index and start the server:
+
+   ```bash
+   uv run python -m app.ingest
+   uv run uvicorn app.main:app --reload
+   ```
+
+### 2c. Docker, local mode (Ollama)
+
+A `.env` file is optional here: the `app` service fills in the Ollama values itself.
+
+```bash
+docker compose up --build -d
+docker compose exec ollama ollama pull llama3.2:3b
+docker compose exec ollama ollama pull nomic-embed-text
+docker compose run --rm app python -m app.ingest
+docker compose restart app
+```
+
+Pull both models before the ingest step and before the first question: without them the startup indexing fails (the API still starts and `/health` answers 200, but `/health/ready` and `/api/v1/ask` return `503`). The models are stored in the `ollama` volume, so the pulls are needed only once. Plan for about 8 GB of RAM and several GB of free disk for the images and models.
+
+### 2d. Docker, cloud mode (Gemini)
+
+Set the Gemini values from "2b. Cloud mode (Gemini)" in `.env`, then start only the cloud service (Ollama is not started):
+
+```bash
+docker compose --profile cloud up --build -d app-cloud
+docker compose run --rm app-cloud python -m app.ingest
+```
+
+`app-cloud` has no provider defaults, so a missing variable stops it at startup. Both app services publish port 8000, so run only one of them at a time. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
+
+### 3. Ask a first question
+
+The ingest step is optional in every setup: the server also indexes the manuals in the background at startup, so it is reachable at once, but `/api/v1/ask` answers `503 INDEX_NOT_READY` until http://localhost:8000/health/ready returns `200`. Then ask a question (in another terminal) or use the Swagger UI:
+
+```bash
+curl -s -X POST http://localhost:8000/api/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What are the maximum speed and the power of the DR-450 impact drill?"}'
+```
+
+More sample requests are in "Ask endpoint". The local 3B model sometimes answers a clear question with a clarifying question; name the product, rephrase, or use Gemini for better answers.
+
+The API listens on port `8000` by default:
+
+| URL | What it is |
+|---|---|
+| http://localhost:8000/docs | Swagger UI with request and response examples |
+| http://localhost:8000/redoc | ReDoc view of the same API |
+| http://localhost:8000/openapi.json | OpenAPI schema |
+| http://localhost:8000/health | Liveness check |
+| http://localhost:8000/health/ready | Readiness check (indexing state) |
+| http://localhost:8000/api/v1/ask | Ask endpoint (`POST`) |
+
+Locally, uvicorn listens on `127.0.0.1:8000`; use `--port <port>` to pick another port. In Docker the container always listens on `8000`, and compose publishes it on the host port `APP_PORT` (default `8000`); with `APP_PORT=8080` in `.env` the API is at http://localhost:8080. Neither mode opens a browser; open the Swagger UI by hand.
 
 ## Project structure
 
@@ -257,35 +327,9 @@ flowchart TD
 
 Provider errors (timeout, unavailable, rate limited) leave the graph unchanged as domain errors and nothing is saved to the history; unexpected errors are wrapped in a generic pipeline error (`RAG_PIPELINE_ERROR`, 502) without internal details.
 
-## Installation
-
-Prerequisites:
-
-- Python 3.12 (uv installs it for you if it is missing)
-- [uv](https://docs.astral.sh/uv/) as the package manager
-- [Ollama](https://ollama.com/download) for the free local mode, or a Google AI Studio API key for Gemini
-- Docker (optional), only for "Run with Docker"
-
-Install:
-
-```bash
-git clone https://github.com/Regdani/docuquery-rag-backend.git
-cd docuquery-rag-backend
-uv sync
-cp .env.example .env
-```
-
-`uv sync` installs the exact versions pinned in `uv.lock`. `.env.example` contains names and safe defaults only, no secrets, and is set up for Ollama: `LLM_PROVIDER`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `OLLAMA_BASE_URL`, `OLLAMA_CHAT_MODEL`. For Gemini, set the values shown in "Primary model (Gemini)" in `.env`; `GOOGLE_API_KEY` goes only in `.env`, which is git-ignored. The rest of the file (paths, chunking, retrieval, timeouts, limits, logging) documents every other setting with its default.
-
 ## Data preparation
 
-By default the application uses the fictional sample manuals in `data/sample/` (see "Sample data"); no preparation is needed. Build the index with:
-
-```bash
-uv run python -m app.ingest
-```
-
-The index is also built automatically at startup (see "Indexing"), so this command is optional. It needs the embedding provider to be reachable (Ollama running with `nomic-embed-text` pulled, or a Gemini key).
+By default the application uses the fictional sample manuals in `data/sample/` (see "Sample data"); no preparation is needed. The index is built automatically at startup or by the ingest command shown in "Quick start" (see "Indexing").
 
 **Using your own manuals:** put markdown files in a directory and point `DATA_DIR` at it in `.env` (for example `DATA_DIR=./data/my-manuals`). Each file must start with a title heading of the form `# <ID> – <name>` (for example `# KV-200 – Espresso Coffee Maker`, with an en dash), followed by `## ` sections (`## Safety`, `## Maintenance`, ...). Files without the title are logged and skipped. A changed file, embedding model or chunk setting is detected by the fingerprint, and the index is rebuilt on the next start or ingest run.
 
@@ -312,13 +356,7 @@ Real manufacturer manuals are copyrighted, so the repository ships its own short
 
 There is no upload API. When the application starts, it loads the manuals from `DATA_DIR` (default `data/sample/`), splits them, embeds the chunks and writes them to the vector store. Indexing runs in a background task, so the server starts immediately. Until indexing has succeeded, endpoints that need the index respond with `503` and the code `INDEX_NOT_READY`. If the data directory is missing or empty, the state becomes `failed` with a clear message, the app still starts and the same `503` is returned. The state (`indexing`, `ready` or `failed`, document and chunk counts, embedding model, timestamp, error) is kept on `app.state.index_status`.
 
-The same pipeline runs from the command line:
-
-```bash
-uv run python -m app.ingest
-```
-
-It prints a summary and exits with 0 on success and 1 (with the error message) when indexing failed. Ollama must be running with the embedding model pulled (`ollama pull nomic-embed-text`) when `EMBEDDING_PROVIDER=ollama`.
+The ingest command in "Quick start" runs the same pipeline from the command line. It prints a summary and exits with 0 on success and 1 (with the error message) when indexing failed.
 
 Settings: `DATA_DIR`, `INDEX_DIR`, `CHROMA_COLLECTION`, `CHUNK_SIZE` and `CHUNK_OVERLAP` (see `.env.example`).
 
@@ -335,43 +373,6 @@ Chroma runs embedded and is persisted to `INDEX_DIR` (`./data/index`). It needs 
 - A fingerprint (SHA-256 over the sorted file names and contents, the embedding model, the chunk size and the overlap) is stored next to the index. If it is unchanged and all chunks are present, the persisted index is reused and no embedding calls are made. Otherwise the old chunks are deleted and the index is rebuilt without duplicates.
 - A first start (or a start after a change) is slower because every chunk is embedded; later starts are fast.
 - With several instances, each one indexes on its own (there is no coordination between instances), which costs duplicate embedding work. A shared index built once by a separate job is the next step.
-
-## Running
-
-Start the development server (it indexes the manuals in the background, so it is reachable at once):
-
-```bash
-uv run uvicorn app.main:app --reload
-```
-
-Open http://localhost:8000/docs for the Swagger UI, check http://localhost:8000/health (liveness) and http://localhost:8000/health/ready (indexing state; `200` once the index is ready). One sample request:
-
-```bash
-curl -s -X POST http://localhost:8000/api/v1/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What are the maximum speed and the power of the DR-450 impact drill?"}'
-```
-
-More sample requests are in "Ask endpoint". The local 3B model sometimes answers a clear question with a clarifying question; name the product, rephrase, or use Gemini for better answers. The addresses and ports are listed below.
-
-### Server address and API docs
-
-The API listens on port `8000` by default:
-
-| URL | What it is |
-|---|---|
-| http://localhost:8000/docs | Swagger UI with request and response examples |
-| http://localhost:8000/redoc | ReDoc view of the same API |
-| http://localhost:8000/openapi.json | OpenAPI schema |
-| http://localhost:8000/health | Liveness check |
-| http://localhost:8000/api/v1/ask | Ask endpoint (`POST`) |
-
-The port depends on how the server is started:
-
-- **Locally** (`uv run uvicorn app.main:app --reload`): uvicorn's default, `127.0.0.1:8000`. Use `--port <port>` to pick another one.
-- **Docker:** the container always listens on `8000`; compose publishes it on the host port `APP_PORT` (default `8000`). With `APP_PORT=8080` in `.env` the API is at http://localhost:8080.
-
-Neither mode opens a browser; open the Swagger UI by hand. It loads while startup indexing is still running, but `/api/v1/ask` answers `503 INDEX_NOT_READY` until `GET /health/ready` reports `ready`.
 
 ## Ask endpoint
 
@@ -523,15 +524,7 @@ Ollama runs locally, so there are no rate limits and no retries. Its failures us
 
 ## Primary model (Gemini)
 
-Gemini is the primary model: a managed API with stronger answers than a small local model, no hardware to run, and one key for both the chat model and the embeddings. The same key works on the free tier for trying the project and on the paid tier, which lifts the rate limits for real traffic. Create an API key in Google AI Studio and set the following in `.env` (the key goes only there; `.env` is git-ignored). Switching between Gemini and Ollama is done by these environment variables only; no code change is needed.
-
-```env
-LLM_PROVIDER=gemini
-EMBEDDING_PROVIDER=gemini
-EMBEDDING_MODEL=gemini-embedding-001
-GOOGLE_API_KEY=<key>
-GEMINI_CHAT_MODEL=gemini-3.1-flash-lite
-```
+Gemini is the primary model: a managed API with stronger answers than a small local model, no hardware to run, and one key for both the chat model and the embeddings. The same key works on the free tier for trying the project and on the paid tier, which lifts the rate limits for real traffic. The `.env` values are listed in "Quick start"; switching between Gemini and Ollama is done by these environment variables only, no code change is needed.
 
 Besides the three provider variables only `GOOGLE_API_KEY` is required; `GEMINI_CHAT_MODEL` has a default. `gemini-3.1-flash-lite` is the small, low-latency, low-cost model, which is enough for answering from a few retrieved manual chunks and stays within free-tier rate limits. `gemini-embedding-001` is Google's general-purpose text embedding model. The free tier is rate limited, so a first indexing run may hit 429 answers; they are retried with backoff.
 
@@ -545,36 +538,9 @@ You can also list the models your key can use with `GET https://generativelangua
 
 ## Local alternative (Ollama)
 
-Ollama runs the chat model and the embeddings on your own machine: no account, no key, no cost. `.env.example` is set up for this mode, and switching to or from it is done by environment variables only. The first download of the models needs an internet connection; after that the mode works offline.
+Ollama runs the chat model and the embeddings on your own machine: no account, no key, no cost. `.env.example` is set up for this mode, and switching to or from it is done by environment variables only; the setup steps are in "Quick start".
 
-1. Install Ollama from https://ollama.com/download (Windows, macOS, Linux).
-2. Pull the two default models:
-
-   ```bash
-   ollama pull llama3.2:3b
-   ollama pull nomic-embed-text
-   ```
-
-3. Make sure the server is running. The desktop installers start it automatically; otherwise run `ollama serve`. It listens on `http://localhost:11434`.
-4. Configure the application (a `.env` copied from `.env.example` already contains these values):
-
-   ```env
-   LLM_PROVIDER=ollama
-   EMBEDDING_PROVIDER=ollama
-   EMBEDDING_MODEL=nomic-embed-text
-   OLLAMA_BASE_URL=http://localhost:11434
-   OLLAMA_CHAT_MODEL=llama3.2:3b
-   ```
-
-5. Build the index and start the application:
-
-   ```bash
-   uv sync
-   uv run python -m app.ingest
-   uv run uvicorn app.main:app --reload
-   ```
-
-No key variable is needed. The application reaches Ollama through `OLLAMA_BASE_URL`: `http://localhost:11434` when both run as local processes (as above), and `http://ollama:11434` in Docker Compose, where Ollama runs in its own container (see "Run with Docker"). The index collection for this setup is `manuals-ollama-nomic-embed-text`. Local mode is verified at the level of the chat model, the embeddings and the retriever by the integration test below; `POST /api/v1/ask` needs a running Ollama to answer.
+No key variable is needed. The application reaches Ollama through `OLLAMA_BASE_URL`: `http://localhost:11434` when both run as local processes, and `http://ollama:11434` in Docker Compose, where Ollama runs in its own container (see "Docker setup"). The index collection for this setup is `manuals-ollama-nomic-embed-text`. Local mode is verified at the level of the chat model, the embeddings and the retriever by the integration test below; `POST /api/v1/ask` needs a running Ollama to answer.
 
 If Ollama is not running, ingest prints `Ollama is not reachable at <base url>. Start it with 'ollama serve' or check OLLAMA_BASE_URL` and exits with 1; if a model is missing, the message names it and says `ollama pull <model>`. The application itself still starts, and endpoints that need the index answer `503`.
 
@@ -609,7 +575,7 @@ GOOGLE_API_KEY=<key>
 
 Run `ollama pull nomic-embed-text` first. The index collection name contains the embedding model, so changing the embeddings builds a new index instead of mixing vectors: this setup uses `manuals-ollama-nomic-embed-text`, while `EMBEDDING_PROVIDER=gemini` with `EMBEDDING_MODEL=gemini-embedding-001` uses `manuals-gemini-gemini-embedding-001`. The old collection stays in `INDEX_DIR` unused.
 
-## Run with Docker
+## Docker setup
 
 The `Dockerfile` builds a `python:3.12-slim` image that installs the locked dependencies with uv (`uv sync --frozen --no-dev`), runs as the non-root user `appuser` and starts `uvicorn app.main:app` on `0.0.0.0:8000`. The sample manuals are baked into the image; the index is not. `docker-compose.yml` defines:
 
@@ -617,41 +583,9 @@ The `Dockerfile` builds a `python:3.12-slim` image that installs the locked depe
 - `ollama`: the Ollama server (`ollama/ollama`), with the models stored in the named volume `ollama`.
 - `app-cloud`: the same image without Ollama, in the `cloud` profile, for Gemini.
 
-The index lives in the named volume `index` (mounted at `INDEX_DIR=/app/data/index`), so it survives restarts and is shared by the `app` and the ingest command. A `.env` file is optional; copy `.env.example` to `.env` to change settings. The health check of the API container calls `GET /health`.
+The index lives in the named volume `index` (mounted at `INDEX_DIR=/app/data/index`), so it survives restarts and is shared by the `app` and the ingest command. The ingest command only pre-builds the index in the shared volume (the app also indexes at startup), and restarting the app makes a running instance pick it up. The health check of the API container calls `GET /health`. The start commands are in "Quick start".
 
-### Local mode (Ollama)
-
-```bash
-docker compose up --build -d
-docker compose exec ollama ollama pull llama3.2:3b
-docker compose exec ollama ollama pull nomic-embed-text
-docker compose run --rm app python -m app.ingest
-docker compose restart app
-curl http://localhost:8000/health
-curl -X POST http://localhost:8000/api/v1/ask   -H "Content-Type: application/json"   -d '{"question": "How do I descale the espresso machine?"}'
-```
-
-Pull both models before the ingest step and before the first question: without them the startup indexing fails (the API still starts and `/health` answers 200, but `/health/ready` reports `503` and `/api/v1/ask` returns `503`). The pulls are a one-time download of about 2 GB (`llama3.2:3b`) and 270 MB (`nomic-embed-text`) into the `ollama` volume; plan for about 8 GB of RAM and several GB of free disk for the images and models (see the hardware notes above). The app also indexes at startup, so the ingest command only pre-builds the index in the shared volume; the restart makes a running app pick it up. To use an NVIDIA GPU, add a `deploy.resources.reservations.devices` entry to the `ollama` service (requires the NVIDIA Container Toolkit); this is optional and not configured here.
-
-### Cloud mode (Gemini)
-
-Set the three provider variables and the keys in `.env` (names in `.env.example`), for example:
-
-```env
-LLM_PROVIDER=gemini
-EMBEDDING_PROVIDER=gemini
-EMBEDDING_MODEL=gemini-embedding-001
-GOOGLE_API_KEY=<key>
-```
-
-then start only the cloud service. `app-cloud` has no provider defaults, so a missing variable stops it at startup:
-
-```bash
-docker compose --profile cloud up --build -d app-cloud
-docker compose run --rm app-cloud python -m app.ingest
-```
-
-Ollama is not started. Both app services publish port 8000, so run only one of them at a time; set `APP_PORT` in `.env` to publish another host port. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
+To use an NVIDIA GPU, add a `deploy.resources.reservations.devices` entry to the `ollama` service (requires the NVIDIA Container Toolkit); this is optional and not configured here.
 
 ## Concurrency and scaling
 
@@ -737,18 +671,20 @@ uv run mypy app                       # type check
 - concurrency: a blocking search does not stall the event loop, peak model concurrency stays within `MAX_CONCURRENT_REQUESTS`, a saturated limiter gives `503 SERVER_BUSY` with `Retry-After`, and slots are released after failures;
 - embedding failure or timeout during retrieval.
 
-**Integration suite.** It makes real calls to Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Local alternative (Ollama)" for the local setup).
+**Integration suite.** It makes real calls to Gemini or a local Ollama server. Each test is skipped, not failed, when its credentials are missing or Ollama is unreachable or lacks a model, so the command ends with exit code 0 on a machine without any of them (see "Quick start" for the local setup).
 
 **CI.** `.github/workflows/ci.yml` runs lint, format check, type check and the offline suite on every push and pull request with Python 3.12 and no secrets.
 
 **Integration tests separately.** `uv run pytest -m integration` runs only the integration suite (`uv run pytest -m integration -k ollama` or `-k gemini` for one provider; Gemini needs `GOOGLE_API_KEY`). `uv run pytest -m "not integration"` never touches the network.
 
-**Reproducibility and configuration.** The dependencies are pinned in `uv.lock` (`uv sync` installs exactly those versions; the Docker image uses `uv sync --frozen`), the application image is described by the `Dockerfile`, the containers by `docker-compose.yml` (see "Run with Docker"), and `.env.example` lists every setting with a safe default and no secrets.
+**Reproducibility and configuration.** The dependencies are pinned in `uv.lock` (`uv sync` installs exactly those versions; the Docker image uses `uv sync --frozen`), the application image is described by the `Dockerfile`, the containers by `docker-compose.yml` (see "Docker setup"), and `.env.example` lists every setting with a safe default and no secrets.
 
 ## Known limitations and next steps
 
 **Limitations of the prototype**
 
+- **Knowledge comes only from the manuals:** the assistant answers from the indexed user manuals and nothing else; price, stock, orders and product recommendations are not part of the application.
+- **API only:** the AI assistant interface on the webshop's pages is out of scope; the prototype provides only the HTTP API it can be built on.
 - **History is lost on restart** and is not shared between instances: a follow-up routed to another instance starts empty.
 - **`session_key` is not authentication:** anyone who knows a key can read and extend that session. The number of sessions is unbounded, so memory grows with the number of conversations until restart.
 - **Startup time depends on indexing:** the first start embeds every chunk (seconds with Gemini, up to a few minutes with Ollama on a CPU); later starts reuse the persisted index. Until it is ready, `/api/v1/ask` returns `503 INDEX_NOT_READY`.
