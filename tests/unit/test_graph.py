@@ -251,11 +251,9 @@ async def test_sources_are_logged(caplog: pytest.LogCaptureFixture) -> None:
 def test_readme_diagram_matches_graph() -> None:
     graph, *_ = make()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    block = re.search(r"```mermaid\n(.*?)```", readme, re.DOTALL)
-    assert block
-    for name in graph.get_graph().nodes:
-        if not name.startswith("__"):
-            assert name in block.group(1)
+    blocks = re.findall(r"```mermaid\n(.*?)```", readme, re.DOTALL)
+    names = [n for n in graph.get_graph().nodes if not n.startswith("__")]
+    assert any(all(n in block for n in names) for block in blocks)
 
 
 def test_rag_package_has_no_provider_imports() -> None:
