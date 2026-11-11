@@ -245,7 +245,6 @@ app/
   core/                Settings (all env vars), error classes, logging setup
 data/sample/           the fictional sample manuals (data/index/ is generated and git-ignored)
 tests/                 fakes.py (test doubles), unit/ and api/ (offline), integration/
-scripts/load_probe.py  parallel request probe for the concurrency limit
 .github/workflows/     CI: lint, format check, type check and offline tests
 ```
 
@@ -493,21 +492,6 @@ Every statement is labelled **implemented** (in the code of this repository) or 
 - **Provider limits:** Gemini returns 429 when the quota is exceeded; Ollama is limited by the machine.
 - **Implemented:** logs only (status, duration and `request_id` per request, `code` per error).
 - **Next step:** metrics through a metrics endpoint (for example Prometheus): LLM latency (p50, p95), slot wait time and waiting requests, error rate by `code`, token usage, retrieval latency, and the share of `no_answer` and `clarification_needed`. The roadmap is in "Next steps".
-
-### Load probe
-
-`scripts/load_probe.py` sends questions in parallel and prints the status counts and latencies:
-
-```bash
-uv run python scripts/load_probe.py --url http://localhost:8000 --concurrency 20
-```
-
-Measured once with fake providers (every model call takes 0.5 s), `MAX_CONCURRENT_REQUESTS=4` and `CONCURRENCY_WAIT_SECONDS=1` on a development laptop. It shows the limiter, not the speed of a real model:
-
-| Concurrency | Total time | Status counts | Latency (min / median / p95 / max) |
-|---|---|---|---|
-| 2 | 1.35 s | `200`: 2 | 1.30 / 1.32 / 1.35 / 1.35 s |
-| 20 | 2.43 s | `200`: 8, `503 SERVER_BUSY`: 12 | 1.35 / 1.35 / 2.43 / 2.43 s |
 
 ## Tests
 
