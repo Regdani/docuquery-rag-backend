@@ -1,6 +1,9 @@
 """Prompt texts and fixed answers used by the question graph."""
 
 _CLEAR_CRITERIA = (
+    "Model IDs such as KV-200 or DR-450 are the webshop's own products; their manuals are "
+    "available, so never ask about the brand or manufacturer. A question that names a model ID "
+    "or comes with a 'Product:' line is clear, even if it is short or says 'it'. "
     "It is NOT clear if it names no product or model and could apply to several products, "
     "if it is too vague to act on, or if it is unrelated to appliances and their manuals."
 )

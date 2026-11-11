@@ -273,6 +273,15 @@ async def test_follow_up_uses_one_call_for_rewrite_and_clarity() -> None:
     assert len(vs.queries) == 1
 
 
+async def test_product_filter_is_given_to_the_clarity_check() -> None:
+    graph, model, vs, _ = make()
+    out = await graph.ainvoke({"question": "How loud is it?", "product_id": "AP-120"})
+    (call,) = model.calls_with("check questions")
+    assert call[1].content == "Product: AP-120\nQuestion: How loud is it?"
+    assert out["standalone_question"] == "How loud is it?"  # the search text stays unchanged
+    assert vs.queries == ["How loud is it?"]
+
+
 def test_readme_diagram_matches_graph() -> None:
     graph, *_ = make()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

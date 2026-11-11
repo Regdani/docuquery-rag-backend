@@ -169,11 +169,17 @@ def build_graph(
         """One LLM call: the clarity check, plus the follow-up rewrite when there is history."""
         question = state.get("question", "")
         history = state.get("messages", [])
+        # A product filter from the request tells the model which product "it" refers to.
+        product_id = state.get("product_id")
+        scope = f"Product: {product_id}\n" if product_id else ""
         if history:
-            prompt = f"Conversation:\n{_transcript(history)}\n\nFollow-up question: {question}"
+            prompt = (
+                f"Conversation:\n{_transcript(history)}\n\n{scope}Follow-up question: {question}"
+            )
             standalone, clear = parse_analysis(await _chat(ANALYZE_SYSTEM, prompt), question)
         else:
-            standalone, clear = question, parse_clear(await _chat(ASSESS_SYSTEM, question))
+            prompt = f"{scope}Question: {question}" if scope else question
+            standalone, clear = question, parse_clear(await _chat(ASSESS_SYSTEM, prompt))
         logger.info("Question assessed as %s", "clear" if clear else "unclear")
         return {
             "standalone_question": standalone,
