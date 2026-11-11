@@ -74,7 +74,7 @@ cp .env.example .env
 
 No account, no key, no cost; after the first model download it works offline.
 
-1. Pull the two models (a one-time download of about 2.3 GB):
+1. Pull the two models (a one-time download of about 2.3 GB; see the model sizes in "Local alternative (Ollama)"):
 
    ```bash
    ollama pull llama3.2:3b
@@ -126,7 +126,7 @@ Compose reads every setting from `.env` and stops with an error if the file is m
 docker compose up --build -d
 ```
 
-This one command starts Ollama, pulls the models named in `.env` (a one-time download of about 2.3 GB, kept in the `ollama` volume) and then starts the API, which builds the index in the background. On the first start the command returns only after the download; `docker compose logs -f ollama-pull app` shows the progress. Plan for about 8 GB of RAM and several GB of free disk.
+This one command starts Ollama, pulls the models named in `.env` (a one-time download of about 2.3 GB, kept in the `ollama` volume) and then starts the API, which builds the index in the background. On the first start the command returns only after the download; `docker compose logs -f ollama-pull app` shows the progress. The memory and hardware requirements are in "Local alternative (Ollama)".
 
 ### 2d. Docker, cloud mode (Gemini)
 
@@ -431,12 +431,21 @@ An HTTP 429 is retried at most `MAX_RETRIES` times with exponential backoff from
 
 Ollama runs the chat model and the embeddings on your own machine: no account, no key, no cost. The application reaches it through `OLLAMA_BASE_URL` (`http://localhost:11434` locally, `http://ollama:11434` in Docker Compose). There are no rate limits and no retries. If Ollama is not running or a model is missing, the error names the base URL or the `ollama pull <model>` command; the application still starts and the endpoints that need the index answer `503`.
 
-Hardware, speed and quality (rough estimates from the public model sizes):
+Hardware and quality, taken from the sources listed below:
 
-- **Memory:** `llama3.2:3b` needs roughly 3 to 4 GB of free RAM (or VRAM) while loaded, `nomic-embed-text` well under 1 GB. Plan for about 8 GB of RAM in total.
-- **CPU or GPU:** both run on a CPU only; a GPU with 4 GB or more of VRAM (or Apple Silicon) is considerably faster but not required.
-- **Speed on a CPU:** a few seconds before the first token and roughly 5 to 20 tokens per second, so a short answer takes several seconds to half a minute. The first indexing takes tens of seconds to a few minutes. Raise `LLM_TIMEOUT_SECONDS` on slow machines.
-- **Quality:** a 3B model can ignore the retrieved context, invent details, follow instructions less reliably and is clearly weaker outside English. This mode is meant for development, demos and offline use.
+- **Model sizes:** `llama3.2:3b` has 3.21B parameters and is a 2.0 GB download in Q4_K_M quantization [1]; `nomic-embed-text` is a 274 MB download [2].
+- **Memory:** Ollama's documentation states that at least 8 GB of RAM should be available to run 7B models [3]; the chat model used here has 3B parameters. The required memory also grows with the context: Ollama uses a 4096-token context window by default, and the required RAM scales with `OLLAMA_NUM_PARALLEL` × `OLLAMA_CONTEXT_LENGTH` [4].
+- **CPU or GPU:** a GPU is not required; a model can be loaded entirely into system memory, which `ollama ps` shows as `100% CPU` [4]. The GPUs Ollama can use (NVIDIA, AMD, Apple Metal) are listed on its hardware support page [5]. Speed depends on the machine, so raise `LLM_TIMEOUT_SECONDS` and `REQUEST_TIMEOUT_SECONDS` on a slow one.
+- **Quality:** Meta intends the 1B and 3B models for highly constrained environments [6]. On MMLU (5-shot) the instruction-tuned 3B model scores 63.4, against 69.4 for Llama 3.1 8B [6]. The officially supported languages are English, German, French, Italian, Portuguese, Hindi, Spanish and Thai; use in other languages is out of scope [6]. Meta also notes that the output may be inaccurate [6]. This mode is therefore meant for development, demos and offline use.
+
+Sources:
+
+1. Ollama model library, llama3.2:3b: https://ollama.com/library/llama3.2:3b
+2. Ollama model library, nomic-embed-text: https://ollama.com/library/nomic-embed-text
+3. Ollama documentation (v0.5.8 README): https://pkg.go.dev/github.com/ollama/ollama@v0.5.8
+4. Ollama FAQ (context window, concurrency, CPU and GPU loading): https://docs.ollama.com/faq
+5. Ollama hardware support: https://docs.ollama.com/gpu
+6. Meta Llama 3.2 3B Instruct model card: https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct
 
 ## Docker setup
 
@@ -474,7 +483,7 @@ Every statement is labelled **implemented** (in the code of this repository) or 
 ### Resource limits
 
 - **Implemented:** timeouts on every external call, a deadline for the whole question (`REQUEST_TIMEOUT_SECONDS`), a bounded slot wait, bounded retries (only HTTP 429, only Gemini), and limits on the question length (`MAX_QUESTION_LENGTH`), the retrieved chunks (`RETRIEVAL_TOP_K`) and the history per session (`HISTORY_MAX_MESSAGES`).
-- **Implemented:** the limit is per process. A local model on a CPU serves roughly one generation at a time, so with Ollama a small value (1 to 2) gives lower latency per request.
+- **Implemented:** the limit is per process. Ollama processes one request per model at a time by default (`OLLAMA_NUM_PARALLEL=1`) and queues the rest ([Ollama FAQ](https://docs.ollama.com/faq)), so with Ollama a small value (1 to 2) keeps requests from holding a slot while they only wait in Ollama's queue.
 - **Not bounded:** the number of sessions in memory, the worker thread pool used by `asyncio.to_thread`, and the number of requests waiting for a slot.
 - **Next step:** rate limiting per client, a bound and an expiry for sessions, a limit on waiting requests.
 
@@ -487,7 +496,7 @@ Every statement is labelled **implemented** (in the code of this repository) or 
 
 ### Bottlenecks and metrics
 
-- **The model:** chat latency dominates a request (seconds on Gemini, up to tens of seconds for a local model on a CPU). The limit and the timeouts bound it; they do not make it faster.
+- **The model:** chat latency dominates a request; with Ollama it depends on the machine's hardware. The limit and the timeouts bound it; they do not make it faster.
 - **One process:** Python code outside the model calls shares one event loop, and the embedded index is opened by one process.
 - **Provider limits:** Gemini returns 429 when the quota is exceeded; Ollama is limited by the machine.
 - **Implemented:** logs only (status, duration and `request_id` per request, `code` per error).
@@ -524,7 +533,7 @@ uv run mypy app                       # type check
 - **API only:** the AI assistant interface on the webshop's pages is out of scope.
 - **History is in memory:** it is lost on restart and not shared between instances.
 - **No authentication:** no auth on any endpoint and no per-client rate limiting. `session_key` is not a secret: anyone who knows a key can read and extend that session. The number of sessions is unbounded, so memory grows until restart.
-- **Startup time depends on indexing:** the first start embeds every chunk (seconds with Gemini, up to a few minutes with Ollama on a CPU).
+- **Startup time depends on indexing:** the first start embeds every chunk; with Ollama the duration depends on the machine's hardware.
 - **No upload API:** manuals are read from `DATA_DIR`; adding one means a restart or an ingest run.
 - **No answer-quality measurement:** the relevance threshold and chunk sizes are reasoned defaults, not tuned values.
 - **The local 3B model is weak** (see "Local alternative (Ollama)").
