@@ -8,9 +8,11 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.language_models import BaseChatModel
 
-from app.api.deps import get_chat_model, get_index_status
+from app.api.deps import get_chat_model, get_index_status, get_limiter
 from app.api.schemas import HealthResponse, LLMCheck, ReadinessResponse
+from app.core.errors import ServerBusyError
 from app.rag.index_status import IndexStatus
+from app.rag.limiter import ModelCallLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +24,9 @@ _TS = "2025-01-15T09:30:00Z"
 def _body(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "state": "ready",
-        "document_count": 6,
+        "document_count": 7,
         "chunk_count": 42,
-        "embedding_model": "nomic-embed-text",
+        "embedding_model": "ollama:nomic-embed-text",
         "last_indexed_at": _TS,
         "error": None,
     }
@@ -97,9 +99,17 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
-async def _check_llm(chat: BaseChatModel, timeout: float) -> LLMCheck:
+async def _ping(chat: BaseChatModel, limiter: ModelCallLimiter) -> None:
+    async with limiter.slot():  # counts against the same limit as the questions
+        await chat.ainvoke("ping")
+
+
+async def _check_llm(chat: BaseChatModel, limiter: ModelCallLimiter, timeout: float) -> LLMCheck:
     try:
-        await asyncio.wait_for(chat.ainvoke("ping"), timeout=timeout)
+        await asyncio.wait_for(_ping(chat, limiter), timeout=timeout)
+    except ServerBusyError:
+        logger.warning("LLM health check skipped: no model slot became free")
+        return LLMCheck(status="busy")
     except TimeoutError:
         logger.warning("LLM health check timed out after %.1fs", timeout)
         return LLMCheck(status="timeout")
@@ -123,8 +133,9 @@ async def ready(
         Query(
             description=(
                 "Also send one minimal request to the chat model, bounded by the "
-                "HEALTH_LLM_TIMEOUT_SECONDS setting. Informational: the result is reported in "
-                "`llm` and never changes the status code. Off by default (it costs a few tokens)."
+                "HEALTH_LLM_TIMEOUT_SECONDS setting and counted against the model-call limit. "
+                "Informational: the result is reported in `llm` and never changes the status "
+                "code. Off by default (it costs a few tokens)."
             )
         ),
     ] = False,
@@ -133,7 +144,7 @@ async def ready(
     llm: LLMCheck | None = None
     if check_llm:
         timeout: float = request.app.state.settings.health_llm_timeout_seconds
-        llm = await _check_llm(get_chat_model(request), timeout)
+        llm = await _check_llm(get_chat_model(request), get_limiter(request), timeout)
     body = ReadinessResponse(
         state=status.state,
         document_count=status.document_count,

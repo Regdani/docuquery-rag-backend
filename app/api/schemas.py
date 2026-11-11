@@ -143,8 +143,11 @@ class HealthResponse(BaseModel):
 class LLMCheck(BaseModel):
     """Result of the optional chat-model reachability check."""
 
-    status: Literal["ok", "unreachable", "timeout"] = Field(
-        description="`ok`, `unreachable` (the call failed) or `timeout` (no answer in time)."
+    status: Literal["ok", "unreachable", "timeout", "busy"] = Field(
+        description=(
+            "`ok`, `unreachable` (the call failed), `timeout` (no answer in time) or `busy` "
+            "(no model slot became free)."
+        )
     )
 
 

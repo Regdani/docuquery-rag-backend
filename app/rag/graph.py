@@ -1,6 +1,6 @@
 """The question flow as a LangGraph graph, compiled once; the state is new for every request.
 
-load_history -> condense -> assess -> (clarify | retrieve -> (generate -> format | no_answer))
+load_history -> analyze -> (clarify | retrieve -> (generate -> format | no_answer))
 -> save_history
 """
 
@@ -23,10 +23,10 @@ from app.memory.store import InMemorySessionStore
 from app.rag.limiter import ModelCallLimiter
 from app.rag.memory_nodes import load_history, save_history
 from app.rag.prompts import (
+    ANALYZE_SYSTEM,
     ANSWER_SYSTEM,
     ASSESS_SYSTEM,
     CLARIFY_SYSTEM,
-    CONDENSE_SYSTEM,
     NO_ANSWER_TEXT,
 )
 from app.rag.state import GraphState, Hit, Source
@@ -41,8 +41,7 @@ STATUS_NO_ANSWER = "no_answer"
 
 NODE_NAMES = (
     "load_history",
-    "condense",
-    "assess",
+    "analyze",
     "retrieve",
     "generate",
     "clarify",
@@ -50,6 +49,9 @@ NODE_NAMES = (
     "format",
     "save_history",
 )
+
+# Greedy first (a question may contain braces), then the first object only.
+_JSON_OBJECT = (re.compile(r"\{.*\}", re.DOTALL), re.compile(r"\{.*?\}", re.DOTALL))
 
 
 def _text(content: Any) -> str:
@@ -63,22 +65,39 @@ def _transcript(messages: list[BaseMessage]) -> str:
     return "\n".join(lines)
 
 
-def parse_clear(raw: str) -> bool:
-    """Read the assess decision; anything unparsable counts as clear so retrieval still runs."""
-    match = re.search(r"\{.*?\}", raw, re.DOTALL)
-    if match:
+def _json_object(raw: str) -> dict[str, Any] | None:
+    """The JSON object in a model reply, or None when there is none."""
+    for pattern in _JSON_OBJECT:
+        match = pattern.search(raw)
+        if match is None:
+            return None
         try:
-            value = json.loads(match.group(0)).get("clear")
-        except (ValueError, AttributeError):
-            return True
-        if isinstance(value, bool):
-            return value
-    return True
+            data = json.loads(match.group(0))
+        except ValueError:
+            continue
+        return data if isinstance(data, dict) else None
+    return None
 
 
-def relevant_hits(state: GraphState, threshold: float) -> list[Hit]:
-    """Hits whose score is at or above the threshold."""
-    return [h for h in state.get("hits", []) if h["score"] >= threshold]
+def parse_clear(raw: str) -> bool:
+    """Read the clarity decision; anything unparsable counts as clear so retrieval still runs."""
+    value = (_json_object(raw) or {}).get("clear")
+    return value if isinstance(value, bool) else True
+
+
+def parse_analysis(raw: str, original: str) -> tuple[str, bool]:
+    """Read (standalone question, clear) from the follow-up analysis.
+
+    A reply without JSON is taken as the rewritten question. A missing or blank question falls
+    back to the original one, and an unparsable decision counts as clear.
+    """
+    data = _json_object(raw)
+    if data is None:
+        return raw.strip() or original, True
+    question = data.get("question")
+    standalone = question.strip() if isinstance(question, str) and question.strip() else original
+    clear = data.get("clear")
+    return standalone, clear if isinstance(clear, bool) else True
 
 
 def make_snippet(text: str, max_chars: int) -> str:
@@ -133,9 +152,9 @@ def build_graph(
     top_k = settings.retrieval_top_k
     snippet_max = settings.snippet_max_chars
     threshold = settings.retrieval_relevance_threshold
-    max_log = settings.log_question_max_chars
 
-    async def _chat(messages: list[BaseMessage]) -> str:
+    async def _chat(system: str, user: str) -> str:
+        messages = [SystemMessage(content=system), HumanMessage(content=user)]
         async with limit.slot():
             reply = await chat_model.ainvoke(messages)
         return _text(reply.content)
@@ -146,41 +165,27 @@ def build_graph(
     async def _save(state: GraphState) -> dict[str, Any]:
         return await save_history(store, state)
 
-    async def condense(state: GraphState) -> dict[str, Any]:
+    async def analyze(state: GraphState) -> dict[str, Any]:
+        """One LLM call: the clarity check, plus the follow-up rewrite when there is history."""
         question = state.get("question", "")
         history = state.get("messages", [])
-        if not history:
-            return {"standalone_question": question}
-        prompt = f"Conversation:\n{_transcript(history)}\n\nFollow-up question: {question}"
-        reply = await _chat([SystemMessage(content=CONDENSE_SYSTEM), HumanMessage(content=prompt)])
-        return {"standalone_question": reply.strip() or question}
-
-    async def assess(state: GraphState) -> dict[str, Any]:
-        reply = await _chat(
-            [
-                SystemMessage(content=ASSESS_SYSTEM),
-                HumanMessage(content=state["standalone_question"]),
-            ]
-        )
-        clear = parse_clear(reply)
+        if history:
+            prompt = f"Conversation:\n{_transcript(history)}\n\nFollow-up question: {question}"
+            standalone, clear = parse_analysis(await _chat(ANALYZE_SYSTEM, prompt), question)
+        else:
+            standalone, clear = question, parse_clear(await _chat(ASSESS_SYSTEM, question))
         logger.info("Question assessed as %s", "clear" if clear else "unclear")
-        return {"status": "" if clear else STATUS_CLARIFICATION}
+        return {
+            "standalone_question": standalone,
+            "status": "" if clear else STATUS_CLARIFICATION,
+        }
 
-    def route_assess(state: GraphState) -> str:
+    def route_analyze(state: GraphState) -> str:
         return "clarify" if state.get("status") == STATUS_CLARIFICATION else "retrieve"
 
     async def clarify(state: GraphState) -> dict[str, Any]:
-        reply = await _chat(
-            [
-                SystemMessage(content=CLARIFY_SYSTEM),
-                HumanMessage(content=state["standalone_question"]),
-            ]
-        )
-        return {
-            "answer": reply.strip(),
-            "status": STATUS_CLARIFICATION,
-            "sources": [],
-        }
+        reply = await _chat(CLARIFY_SYSTEM, state["standalone_question"])
+        return {"answer": reply.strip(), "status": STATUS_CLARIFICATION, "sources": []}
 
     async def retrieve(state: GraphState) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"k": top_k}
@@ -193,39 +198,28 @@ def build_graph(
                 state["standalone_question"],
                 **kwargs,
             )
-        return {"hits": [Hit(document=doc, score=float(score)) for doc, score in pairs]}
+        # Only chunks at or above the threshold are kept; they are the context and the sources.
+        hits = [Hit(document=doc, score=float(score)) for doc, score in pairs]
+        return {"hits": [h for h in hits if h["score"] >= threshold]}
 
     def route_retrieve(state: GraphState) -> str:
-        return "generate" if relevant_hits(state, threshold) else "no_answer"
+        return "generate" if state.get("hits") else "no_answer"
 
     async def generate(state: GraphState) -> dict[str, Any]:
-        used = relevant_hits(state, threshold)
-        context = "\n\n---\n\n".join(h["document"].page_content for h in used)
-        reply = await _chat(
-            [
-                SystemMessage(content=ANSWER_SYSTEM.format(context=context)),
-                HumanMessage(content=state["standalone_question"]),
-            ]
-        )
+        context = "\n\n---\n\n".join(h["document"].page_content for h in state["hits"])
+        reply = await _chat(ANSWER_SYSTEM.format(context=context), state["standalone_question"])
         return {"answer": reply.strip()}
 
     async def no_answer(state: GraphState) -> dict[str, Any]:
         return {"answer": NO_ANSWER_TEXT, "status": STATUS_NO_ANSWER, "sources": []}
 
     async def format_result(state: GraphState) -> dict[str, Any]:
-        sources = [_source(h, snippet_max) for h in relevant_hits(state, threshold)]
-        question = state.get("question", "")
-        logger.info(
-            "Answered question %r using sources: %s",
-            question[:max_log],
-            [f"{s['product_id']}/{s['section']}/{s['chunk_id']}" for s in sources],
-        )
+        sources = [_source(h, snippet_max) for h in state["hits"]]
         return {"status": STATUS_ANSWERED, "sources": sources}
 
     nodes: dict[str, NodeFn] = {
         "load_history": _load,
-        "condense": condense,
-        "assess": assess,
+        "analyze": analyze,
         "retrieve": retrieve,
         "generate": generate,
         "clarify": clarify,
@@ -238,10 +232,9 @@ def build_graph(
     for name, fn in nodes.items():
         graph.add_node(name, _guard(name, fn))  # type: ignore[call-overload]
     graph.add_edge(START, "load_history")
-    graph.add_edge("load_history", "condense")
-    graph.add_edge("condense", "assess")
+    graph.add_edge("load_history", "analyze")
     graph.add_conditional_edges(
-        "assess", route_assess, {"clarify": "clarify", "retrieve": "retrieve"}
+        "analyze", route_analyze, {"clarify": "clarify", "retrieve": "retrieve"}
     )
     graph.add_conditional_edges(
         "retrieve", route_retrieve, {"generate": "generate", "no_answer": "no_answer"}

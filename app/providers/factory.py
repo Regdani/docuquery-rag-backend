@@ -6,6 +6,7 @@ or an unknown provider raises ProviderConfigError; there is never a fallback to 
 
 import re
 from collections.abc import Callable, Sequence
+from typing import Literal
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
@@ -22,6 +23,9 @@ from app.providers.resilience import (
 )
 
 SUPPORTED_PROVIDERS = ("gemini", "ollama")
+# Cosine distance: Chroma then reports relevance as cosine similarity (0..1), whether or not
+# the embedding model returns normalized vectors.
+_DISTANCE: Literal["cosine"] = "cosine"
 
 
 def _require(settings: Settings, provider: str, fields: Sequence[str]) -> None:
@@ -60,7 +64,9 @@ def _create_gemini_chat(settings: Settings) -> BaseChatModel:
         model=settings.gemini_chat_model,
         google_api_key=settings.google_api_key,
         timeout=settings.llm_timeout_seconds,
-        max_retries=settings.max_retries,
+        # 1 = a single attempt (0 would mean the SDK default). Retries come only from the
+        # resilience wrapper, so they do not multiply.
+        max_retries=1,
     )
 
 
@@ -107,8 +113,6 @@ def _create_ollama_embeddings(settings: Settings) -> Embeddings:
     )
 
 
-# Cloud providers get error translation and bounded 429 retry; ollama gets translation only.
-_CLOUD = frozenset({"gemini"})
 _CHAT: dict[str, Callable[[Settings], BaseChatModel]] = {
     "gemini": _create_gemini_chat,
     "ollama": _create_ollama_chat,
@@ -119,43 +123,34 @@ _EMBEDDINGS: dict[str, Callable[[Settings], Embeddings]] = {
 }
 
 
+def _policy(settings: Settings, provider: str, model: str) -> RetryPolicy:
+    """Gemini: error translation and bounded 429 retry. Ollama: translation only (no 429s)."""
+    if provider == "ollama":
+        return RetryPolicy("ollama", 0, 0.0, ollama_translator(settings.ollama_base_url, model))
+    return RetryPolicy(provider, settings.max_retries, settings.retry_backoff_seconds)
+
+
 def create_chat_model(settings: Settings) -> BaseChatModel:
-    """Build the chat model for `settings.llm_provider`."""
-    builder = _CHAT.get(settings.llm_provider) if settings.llm_provider else None
-    if builder is None:
-        raise _unknown("LLM_PROVIDER", settings.llm_provider)
-    model = builder(settings)
-    if settings.llm_provider in _CLOUD:
-        return ResilientChatModel(
-            inner=model,
-            provider=settings.llm_provider,
-            rate_limit_retries=settings.max_retries,
-            backoff_seconds=settings.retry_backoff_seconds,
-        )
-    if settings.llm_provider == "ollama":
-        # No rate limits locally: translation only, no retries.
-        return ResilientChatModel(
-            inner=model,
-            provider="ollama",
-            translator=ollama_translator(settings.ollama_base_url, settings.ollama_chat_model),
-        )
-    return model
+    """Build the chat model for `settings.llm_provider`, wrapped for error translation."""
+    provider = settings.llm_provider
+    builder = _CHAT.get(provider) if provider else None
+    if provider is None or builder is None:
+        raise _unknown("LLM_PROVIDER", provider)
+    return ResilientChatModel(
+        inner=builder(settings),
+        policy=_policy(settings, provider, settings.ollama_chat_model),
+    )
 
 
 def create_embeddings(settings: Settings) -> Embeddings:
     """Build the embeddings for `settings.embedding_provider` (required, no fallback)."""
     provider = settings.embedding_provider
     builder = _EMBEDDINGS.get(provider) if provider else None
-    if builder is None:
+    if provider is None or builder is None:
         raise _unknown("EMBEDDING_PROVIDER", provider)
-    embeddings = builder(settings)
-    if provider in _CLOUD:
-        policy = RetryPolicy(provider, settings.max_retries, settings.retry_backoff_seconds)
-        return ResilientEmbeddings(embeddings, policy)
-    if provider == "ollama":
-        translator = ollama_translator(settings.ollama_base_url, settings.embedding_model)
-        return ResilientEmbeddings(embeddings, RetryPolicy("ollama", 0, 0.0, translator))
-    return embeddings
+    return ResilientEmbeddings(
+        builder(settings), _policy(settings, provider, settings.embedding_model)
+    )
 
 
 def client_name(client: object) -> str:
@@ -181,11 +176,24 @@ def index_collection_name(settings: Settings) -> str:
 def create_vector_store(settings: Settings, embeddings: Embeddings) -> VectorStore:
     """Build the persistent Chroma vector store (no network access with local embeddings)."""
     try:
+        from chromadb.api.collection_configuration import (
+            CreateCollectionConfiguration,
+            CreateHNSWConfiguration,
+        )
         from langchain_chroma import Chroma
     except ImportError as exc:
         raise _import_error("chroma", "langchain-chroma", exc) from exc
-    return Chroma(
+    store = Chroma(
         collection_name=index_collection_name(settings),
         embedding_function=embeddings,
         persist_directory=settings.index_dir,
+        collection_configuration=CreateCollectionConfiguration(
+            hnsw=CreateHNSWConfiguration(space=_DISTANCE)
+        ),
     )
+    hnsw = store._collection.configuration.get("hnsw") or {}
+    if hnsw.get("space") != _DISTANCE:
+        # An existing collection keeps the distance it was created with; an index built with
+        # another distance is dropped here and rebuilt by the indexing step.
+        store.reset_collection()
+    return store

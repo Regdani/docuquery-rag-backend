@@ -1,10 +1,10 @@
 """CLI: `python -m app.ingest` runs the same indexing pipeline as the application startup."""
 
-import logging
 import sys
 
 from app.core.config import get_settings
 from app.core.errors import ServiceError
+from app.core.logging import configure_logging
 from app.providers.factory import (
     create_embeddings,
     create_vector_store,
@@ -17,9 +17,7 @@ from app.rag.indexing import run_indexing
 def main() -> int:
     """Build the index; return 0 on success and 1 when indexing failed."""
     settings = get_settings()
-    logging.basicConfig(
-        level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    configure_logging(settings.log_level)
     try:
         embeddings = create_embeddings(settings)
         store = create_vector_store(settings, embeddings)

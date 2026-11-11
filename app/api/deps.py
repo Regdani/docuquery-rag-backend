@@ -5,8 +5,8 @@ from fastapi.exceptions import RequestValidationError
 from langchain_core.language_models import BaseChatModel
 
 from app.core.errors import IndexNotReadyError
-from app.memory.store import InMemorySessionStore
 from app.rag.index_status import IndexStatus
+from app.rag.limiter import ModelCallLimiter
 from app.services.qa_service import QAServiceProtocol
 
 
@@ -41,12 +41,6 @@ def validate_question_length(request: Request, question: str) -> None:
         )
 
 
-def get_store(request: Request) -> InMemorySessionStore:
-    """Return the session store created at startup (override in tests)."""
-    store: InMemorySessionStore = request.app.state.session_store
-    return store
-
-
 def get_qa_service(request: Request) -> QAServiceProtocol:
     """Return the QAService created at startup (override in tests)."""
     service: QAServiceProtocol = request.app.state.qa_service
@@ -57,3 +51,9 @@ def get_chat_model(request: Request) -> BaseChatModel:
     """Return the chat model created at startup (override in tests)."""
     model: BaseChatModel = request.app.state.chat_model
     return model
+
+
+def get_limiter(request: Request) -> ModelCallLimiter:
+    """Return the model-call limiter created at startup."""
+    limiter: ModelCallLimiter = request.app.state.limiter
+    return limiter

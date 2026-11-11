@@ -9,8 +9,6 @@ from collections.abc import Sequence
 
 from langchain_core.messages import BaseMessage
 
-from app.core.config import Settings, get_settings
-
 
 class InMemorySessionStore:
     """Map of session key to chat messages; each session keeps the latest N messages."""
@@ -35,21 +33,3 @@ class InMemorySessionStore:
         """Replace the transcript for `key`, keeping only the most recent N messages."""
         async with self._lock:
             self._sessions[key] = list(messages)[-self._max_messages :]
-
-
-_default_store: InMemorySessionStore | None = None
-
-
-def get_session_store(settings: Settings | None = None) -> InMemorySessionStore:
-    """Return the process-level store, creating it on first use (the only creator)."""
-    global _default_store
-    if _default_store is None:
-        resolved = settings or get_settings()
-        _default_store = InMemorySessionStore(resolved.history_max_messages)
-    return _default_store
-
-
-def reset_session_store() -> None:
-    """Drop the process-level store (test isolation helper)."""
-    global _default_store
-    _default_store = None

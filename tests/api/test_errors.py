@@ -15,14 +15,15 @@ from app.api.deps import get_qa_service
 from app.core.config import Settings
 from app.core.errors import LLMRateLimitedError, LLMTimeoutError, LLMUnavailableError
 from app.main import create_app
-from app.providers.resilience import ResilientChatModel
+from app.providers.resilience import ResilientChatModel, RetryPolicy
 from app.rag.index_status import IndexStatus
-from tests.api.test_ask import QUESTION, make_client, scripted, wait_ready
+from tests.api.test_ask import QUESTION, make_client, responder, scripted, wait_ready
 from tests.fakes import (
     EmptyRetrievalVectorStore,
     FailingQueryEmbeddings,
     FlakyChatModel,
     RelevanceVectorStore,
+    SlowChatModel,
 )
 
 URL = "/api/v1/ask"
@@ -191,12 +192,23 @@ def test_vendor_rate_limit_after_retries_end_to_end(tmp_path: Path) -> None:
     )
     exc = genai_errors.APIError(429, {"error": {"message": "slow"}}, response)
     inner = FlakyChatModel(failures=[exc], always=True)
-    chat = ResilientChatModel(inner=inner, provider="gemini", rate_limit_retries=1)
+    chat = ResilientChatModel(inner=inner, policy=RetryPolicy("gemini", 1, 0.0))
     with make_client(tmp_path, chat) as c:
         wait_ready(c)
         resp = c.post(URL, json={"question": QUESTION})
     assert_unified(resp, 503, "LLM_RATE_LIMITED")
     assert resp.headers["retry-after"] == "3" and inner.calls == 2
+
+
+def test_whole_request_deadline_is_504(tmp_path: Path) -> None:
+    chat = SlowChatModel(responder=responder(), delay=0.5)
+    with make_client(tmp_path, chat, request_timeout_seconds=0.2) as c:
+        wait_ready(c)
+        resp = c.post(URL, json={"question": QUESTION, "session_key": "deadline-01"})
+        assert_unified(resp, 504, "LLM_TIMEOUT")
+        assert "0.2 seconds" in resp.json()["detail"]
+        # Nothing was saved: the next question starts without history.
+        assert c.app.state.session_store._sessions == {}  # type: ignore[attr-defined]
 
 
 def test_index_not_ready_is_503(client: TestClient) -> None:

@@ -7,8 +7,8 @@ mapped to LLMTimeoutError / LLMUnavailableError / LLMRateLimitedError; anything 
 (programming errors, bad input) is re-raised untouched. Domain error messages only carry the
 provider name and the exception class name, never the vendor message, so secrets cannot leak.
 
-Retry note: the vendor clients keep their own `max_retries`; this layer adds a bounded retry of
-HTTP 429 with exponential backoff on top of it and then raises LLMRateLimitedError.
+Retry note: the Gemini client is built with a single attempt, so this layer is the only retry:
+at most `MAX_RETRIES` retries of HTTP 429 with exponential backoff, then LLMRateLimitedError.
 """
 
 import asyncio
@@ -68,6 +68,19 @@ def _from_status(
     return None
 
 
+def _transport_error(
+    exc: BaseException, timeout: Callable[[], ServiceError], unreachable: Callable[[], ServiceError]
+) -> ServiceError | None:
+    """Timeouts and connection failures (builtin and httpx), mapped by the caller's factories."""
+    http_timeout = _vendor_types("httpx", ["TimeoutException"])
+    if isinstance(exc, TimeoutError) or (http_timeout and isinstance(exc, http_timeout)):
+        return timeout()
+    http_transport = _vendor_types("httpx", ["TransportError"])
+    if isinstance(exc, ConnectionError) or (http_transport and isinstance(exc, http_transport)):
+        return unreachable()
+    return None
+
+
 def translate_error(provider: str, exc: BaseException) -> ServiceError | None:
     """Map a vendor/transport exception to a domain error, or None if it is not an LLM failure."""
     if isinstance(exc, ServiceError):
@@ -82,14 +95,11 @@ def translate_error(provider: str, exc: BaseException) -> ServiceError | None:
             return _from_status(provider, status, name, exc)
         return None
 
-    # Transport level (Gemini uses httpx; also builtin timeouts and connection errors)
-    http_timeout = _vendor_types("httpx", ["TimeoutException"])
-    if isinstance(exc, TimeoutError) or (http_timeout and isinstance(exc, http_timeout)):
-        return LLMTimeoutError(f"{provider} request timed out ({name})")
-    http_transport = _vendor_types("httpx", ["TransportError"])
-    if isinstance(exc, ConnectionError) or (http_transport and isinstance(exc, http_transport)):
-        return LLMUnavailableError(f"{provider} is unreachable ({name})")
-    return None
+    return _transport_error(
+        exc,
+        lambda: LLMTimeoutError(f"{provider} request timed out ({name})"),
+        lambda: LLMUnavailableError(f"{provider} is unreachable ({name})"),
+    )
 
 
 Translator = Callable[[BaseException], ServiceError | None]
@@ -106,17 +116,22 @@ def ollama_translator(base_url: str, model: str) -> Translator:
         if isinstance(exc, ServiceError):
             return exc
         name = type(exc).__name__
-        http_timeout = _vendor_types("httpx", ["TimeoutException"])
-        if isinstance(exc, TimeoutError) or (http_timeout and isinstance(exc, http_timeout)):
+
+        def timed_out() -> ServiceError:
             return LLMTimeoutError(
                 f"Ollama at {base_url} did not answer in time (model '{model}', {name})"
             )
-        http_transport = _vendor_types("httpx", ["TransportError"])
-        if isinstance(exc, ConnectionError) or (http_transport and isinstance(exc, http_transport)):
-            return LLMUnavailableError(
+
+        transport = _transport_error(
+            exc,
+            timed_out,
+            lambda: LLMUnavailableError(
                 f"Ollama is not reachable at {base_url}. Start it with 'ollama serve' "
                 f"or check OLLAMA_BASE_URL ({name})"
-            )
+            ),
+        )
+        if transport is not None:
+            return transport
         response_errors = _vendor_types("ollama", ["ResponseError"])
         if response_errors and isinstance(exc, response_errors):
             status = getattr(exc, "status_code", -1)
@@ -124,10 +139,8 @@ def ollama_translator(base_url: str, model: str) -> Translator:
                 return LLMUnavailableError(
                     f"Ollama model '{model}' was not found at {base_url}. Run 'ollama pull {model}'"
                 )
-            if status == 408 or status == 504:
-                return LLMTimeoutError(
-                    f"Ollama at {base_url} did not answer in time (model '{model}', {name})"
-                )
+            if status in (408, 504):
+                return timed_out()
             if isinstance(status, int) and status >= 500:
                 return LLMUnavailableError(
                     f"Ollama at {base_url} failed with status {status} (model '{model}')"
@@ -196,22 +209,14 @@ class RetryPolicy:
 
 
 class ResilientChatModel(BaseChatModel):
-    """Delegates to `inner`, translating provider failures and retrying HTTP 429."""
+    """Delegates to `inner`, translating provider failures and retrying HTTP 429 per `policy`."""
 
     inner: BaseChatModel
-    provider: str
-    rate_limit_retries: int = 0
-    backoff_seconds: float = 0.0
-    translator: Translator | None = None
+    policy: RetryPolicy
 
     @property
     def _llm_type(self) -> str:
         return f"resilient-{self.inner._llm_type}"
-
-    def _policy(self) -> RetryPolicy:
-        return RetryPolicy(
-            self.provider, self.rate_limit_retries, self.backoff_seconds, self.translator
-        )
 
     def _generate(
         self,
@@ -220,7 +225,7 @@ class ResilientChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return self._policy().call(
+        return self.policy.call(
             lambda: self.inner._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         )
 
@@ -231,7 +236,7 @@ class ResilientChatModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return await self._policy().acall(
+        return await self.policy.acall(
             lambda: self.inner._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
         )
 

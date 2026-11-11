@@ -33,8 +33,7 @@ class GraphState(TypedDict, total=False):
     messages: list[BaseMessage]  # prior history for the session
     question: str  # original question as asked
     standalone_question: str
-    hits: list[Hit]
+    hits: list[Hit]  # retrieved chunks at or above the relevance threshold
     answer: str
     sources: list[Source]
     status: str  # answered | clarification_needed | no_answer
-    error: str | None

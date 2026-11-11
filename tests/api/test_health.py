@@ -11,6 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from app.core.config import Settings
 from app.main import create_app
 from app.rag.index_status import IndexStatus
+from app.rag.limiter import ModelCallLimiter
 from tests.fakes import FlakyChatModel
 
 
@@ -31,10 +32,15 @@ class SlowChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="late"))])
 
 
-def make_client(status: IndexStatus, chat: BaseChatModel | None = None) -> TestClient:
+def make_client(
+    status: IndexStatus,
+    chat: BaseChatModel | None = None,
+    limiter: ModelCallLimiter | None = None,
+) -> TestClient:
     app = create_app(Settings(health_llm_timeout_seconds=0.2))
     app.state.index_status = status
     app.state.chat_model = chat or FakeListChatModel(responses=["pong"])
+    app.state.limiter = limiter or ModelCallLimiter(4, 1.0)
     return TestClient(app)  # no lifespan: no indexing, no providers
 
 
@@ -128,6 +134,21 @@ def test_llm_check_timeout(caplog: pytest.LogCaptureFixture) -> None:
     assert response.status_code == 200
     assert response.json()["llm"] == {"status": "timeout"}
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_llm_check_counts_against_the_model_call_limit() -> None:
+    limiter = ModelCallLimiter(1, 0.05)
+    chat = FlakyChatModel(reply="pong")
+    client = make_client(READY, chat, limiter)
+
+    async def hold_the_only_slot() -> Any:
+        async with limiter.slot():
+            return client.get("/health/ready", params={"check_llm": "true"})
+
+    response = asyncio.run(hold_the_only_slot())
+    assert response.status_code == 200
+    assert response.json()["llm"] == {"status": "busy"}
+    assert chat.calls == 0
 
 
 def test_llm_check_does_not_make_unready_state_ready() -> None:

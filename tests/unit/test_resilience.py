@@ -41,9 +41,7 @@ IDS = [f[0] for f in FAILURES]
 
 def chat(failures: list[Any], retries: int = 2, always: bool = False) -> tuple[Any, Any]:
     inner = FlakyChatModel(failures=failures, always=always)
-    wrapper = ResilientChatModel(
-        inner=inner, provider="gemini", rate_limit_retries=retries, backoff_seconds=0.0
-    )
+    wrapper = ResilientChatModel(inner=inner, policy=RetryPolicy("gemini", retries, 0.0))
     return wrapper, inner
 
 
@@ -151,7 +149,7 @@ def test_factory_wires_retry_settings_for_cloud_and_local() -> None:
     )
     model = create_chat_model(s)
     assert isinstance(model, ResilientChatModel)
-    assert (model.rate_limit_retries, model.backoff_seconds) == (4, 0.25)
+    assert (model.policy.max_retries, model.policy.backoff_seconds) == (4, 0.25)
     emb = create_embeddings(s)
     assert isinstance(emb, ResilientEmbeddings)
     policy = emb._policy
@@ -159,7 +157,7 @@ def test_factory_wires_retry_settings_for_cloud_and_local() -> None:
     local = Settings(_env_file=None, llm_provider="ollama")  # type: ignore[call-arg]
     local_chat = create_chat_model(local)  # ollama: translation only, never a 429 retry
     assert isinstance(local_chat, ResilientChatModel)
-    assert local_chat.rate_limit_retries == 0
+    assert local_chat.policy.max_retries == 0
 
 
 def test_secret_not_in_logs_or_errors(caplog: pytest.LogCaptureFixture) -> None:

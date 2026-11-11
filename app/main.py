@@ -16,7 +16,7 @@ from app.api.health import router as health_router
 from app.api.routes import router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
-from app.memory.store import get_session_store
+from app.memory.store import InMemorySessionStore
 from app.providers.factory import (
     client_name,
     create_chat_model,
@@ -60,7 +60,7 @@ def create_app(
         )
         model_name = embedding_model_name(resolved)
         store = vector_store or create_vector_store(resolved, emb)
-        session_store = get_session_store(resolved)
+        session_store = InMemorySessionStore(resolved.history_max_messages)
         app.state.session_store = session_store
         logger.info(
             "Conversation history is in memory only, lost on restart; max %d messages per session",
@@ -81,6 +81,7 @@ def create_app(
             app.state.graph,
             lambda: app.state.index_status,
             resolved.log_question_max_chars,
+            resolved.request_timeout_seconds,
         )
 
         async def build_index() -> None:

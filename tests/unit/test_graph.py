@@ -16,7 +16,7 @@ from app.core.errors import (
     ServiceError,
 )
 from app.memory.store import InMemorySessionStore
-from app.rag.graph import NODE_NAMES, build_graph
+from app.rag.graph import NODE_NAMES, build_graph, parse_analysis
 from app.rag.prompts import NO_ANSWER_TEXT
 from tests.fakes import (
     EmptyRetrievalVectorStore,
@@ -241,11 +241,36 @@ async def test_unexpected_errors_are_wrapped_without_leaking() -> None:
     assert isinstance(info.value, ServiceError)
 
 
-async def test_sources_are_logged(caplog: pytest.LogCaptureFixture) -> None:
-    graph, *_ = make()
-    with caplog.at_level("INFO", logger="app.rag.graph"):
-        await graph.ainvoke({"question": QUESTION})
-    assert any("AP-120/Specifications/ap-120.md::0::0" in r.getMessage() for r in caplog.records)
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            '{"question": "How loud is the AP-120?", "clear": true}',
+            ("How loud is the AP-120?", True),
+        ),
+        ('Sure: {"question": "Which filter?", "clear": false}', ("Which filter?", False)),
+        ('{"question": "Is {x} ok?", "clear": true}', ("Is {x} ok?", True)),
+        ('{"clear": false}', ("orig", False)),
+        ('{"question": "  ", "clear": "maybe"}', ("orig", True)),
+        ("How loud is the AP-120?", ("How loud is the AP-120?", True)),
+        ("", ("orig", True)),
+    ],
+)
+def test_parse_analysis(raw: str, expected: tuple[str, bool]) -> None:
+    assert parse_analysis(raw, "orig") == expected
+
+
+async def test_follow_up_uses_one_call_for_rewrite_and_clarity() -> None:
+    model = scripted(condensed='{"question": "Which AP-120 filter?", "clear": false}')
+    graph, _, vs, _ = make(model)
+    await graph.ainvoke({"question": QUESTION, "session_key": "session-1"})
+    calls_before = len(model.prompts)
+    out = await graph.ainvoke({"question": "Which one?", "session_key": "session-1"})
+    assert out["status"] == "clarification_needed"
+    assert out["standalone_question"] == "Which AP-120 filter?"
+    assert model.calls_with("check questions")[1:] == []  # no separate clarity call
+    assert len(model.prompts) - calls_before == 2  # analyze + clarify
+    assert len(vs.queries) == 1
 
 
 def test_readme_diagram_matches_graph() -> None:

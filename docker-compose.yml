@@ -32,7 +32,9 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       INDEX_DIR: /app/data/index
     depends_on:
-      - ollama
+      # The app starts (and indexes) only after the models are available.
+      ollama-pull:
+        condition: service_completed_successfully
 
   # Same image as `app`, without the Ollama dependency.
   app-cloud:
@@ -45,8 +47,36 @@ services:
     image: ollama/ollama:0.12.6
     volumes:
       - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     restart: unless-stopped
     # Optional NVIDIA GPU passthrough: see the README.
+
+  # One-shot job: pulls the Ollama models named in .env, for the parts (chat, embeddings) that
+  # use Ollama. Already downloaded models are kept in the `ollama` volume and only checked.
+  ollama-pull:
+    image: ollama/ollama:0.12.6
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        llm=$$(echo "$${LLM_PROVIDER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        emb=$$(echo "$${EMBEDDING_PROVIDER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        if [ "$$llm" = "ollama" ]; then ollama pull "$${OLLAMA_CHAT_MODEL:-llama3.2:3b}"; fi
+        if [ "$$emb" = "ollama" ]; then ollama pull "$${EMBEDDING_MODEL}"; fi
+        echo "Ollama models are ready"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   index:

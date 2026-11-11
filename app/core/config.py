@@ -44,10 +44,10 @@ class Settings(BaseSettings):
         default=4, ge=1, le=20, description="Number of chunks retrieved per question (1..20)."
     )
     retrieval_relevance_threshold: float = Field(
-        default=0.3,
+        default=0.5,
         ge=0.0,
         le=1.0,
-        description="Minimum relevance score (0..1) for a retrieved chunk to be used.",
+        description="Minimum relevance score (cosine similarity, 0..1) for a chunk to be used.",
     )
 
     snippet_max_chars: int = Field(
@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     embedding_timeout_seconds: float = 30.0
     health_llm_timeout_seconds: float = Field(
         default=5.0, gt=0, description="Timeout of the optional LLM check in /health/ready."
+    )
+    request_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description="Deadline for one whole question (every model call and retry included).",
     )
     max_retries: int = 2
     retry_backoff_seconds: float = 0.5

@@ -1,18 +1,24 @@
 """Prompt texts and fixed answers used by the question graph."""
 
-CONDENSE_SYSTEM = (
-    "You rewrite follow-up questions. Given a conversation and a follow-up question, "
-    "rewrite the follow-up as one standalone question that can be understood without the "
-    "conversation: keep product names and model IDs, resolve pronouns. "
-    "Reply with the rewritten question only."
+_CLEAR_CRITERIA = (
+    "It is NOT clear if it names no product or model and could apply to several products, "
+    "if it is too vague to act on, or if it is unrelated to appliances and their manuals."
 )
 
 ASSESS_SYSTEM = (
     "You check questions about the user manuals of household and DIY appliances. "
-    "Decide whether the question is clear enough to search the manuals. It is NOT clear if "
-    "it names no product or model and could apply to several products, if it is too vague "
-    "to act on, or if it is unrelated to appliances and their manuals. "
+    f"Decide whether the question is clear enough to search the manuals. {_CLEAR_CRITERIA} "
     'Reply with JSON only: {"clear": true} or {"clear": false}.'
+)
+
+ANALYZE_SYSTEM = (
+    "You rewrite follow-up questions about the user manuals of household and DIY appliances. "
+    "Given a conversation and a follow-up question, first rewrite the follow-up as one "
+    "standalone question that can be understood without the conversation: keep product names "
+    "and model IDs, resolve pronouns. Then decide whether that standalone question is clear "
+    f"enough to search the manuals. {_CLEAR_CRITERIA} "
+    'Reply with JSON only: {"question": "<standalone question>", "clear": true} '
+    '(or "clear": false).'
 )
 
 CLARIFY_SYSTEM = (

@@ -42,7 +42,7 @@ class ProviderConfigError(ServiceError):
     """Raised at startup when a provider is unknown, incomplete or not installed."""
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, code="provider_config_error", status_code=500)
+        super().__init__(message, code="PROVIDER_CONFIG_ERROR", status_code=500)
 
 
 class LLMTimeoutError(ServiceError):

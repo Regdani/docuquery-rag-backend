@@ -1,12 +1,13 @@
 """Application logic for questions: calls the compiled graph and maps its result."""
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from app.core.errors import LLMEmptyResponseError, ProductNotFoundError
+from app.core.errors import LLMEmptyResponseError, LLMTimeoutError, ProductNotFoundError
 from app.rag.index_status import IndexStatus
 from app.rag.state import GraphState, Source
 
@@ -49,10 +50,12 @@ class QAService:
         graph: Any,
         index_status: Callable[[], IndexStatus],
         log_question_max_chars: int,
+        request_timeout_seconds: float,
     ) -> None:
         self._graph = graph
         self._index_status = index_status
         self._max_log = log_question_max_chars
+        self._timeout = request_timeout_seconds
 
     def _resolve_product(self, product_id: str) -> str:
         for known in self._index_status().product_ids:
@@ -76,7 +79,14 @@ class QAService:
             "session_key": key,
             "product_id": resolved,
         }
-        out = await self._graph.ainvoke(state)
+        try:
+            # One deadline for the whole flow, so per-call timeouts and retries cannot add up.
+            async with asyncio.timeout(self._timeout):
+                out = await self._graph.ainvoke(state)
+        except TimeoutError:
+            raise LLMTimeoutError(
+                f"The question was not answered within {self._timeout:g} seconds."
+            ) from None
         status = str(out["status"])
         answer = str(out["answer"])
         if status == "answered" and not answer.strip():
@@ -90,8 +100,6 @@ class QAService:
             question[: self._max_log],
             len(sources),
         )
-        if status != "answered":
-            logger.info("ask request_id=%s ended with %s (no sources)", request_id, status)
         for s in sources:
             logger.info(
                 "ask request_id=%s source product_id=%s section=%r chunk_id=%s score=%.3f",

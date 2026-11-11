@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import Iterator
 
 import pytest
 from fastapi import FastAPI
@@ -12,7 +11,7 @@ from pydantic import ValidationError
 from app.api.schemas import AskRequest, AskResponse
 from app.core.config import Settings
 from app.main import create_app
-from app.memory.store import InMemorySessionStore, get_session_store, reset_session_store
+from app.memory.store import InMemorySessionStore
 from app.rag.memory_nodes import load_history, save_history
 from app.services.qa_service import new_session_key
 
@@ -59,27 +58,20 @@ async def test_concurrent_access_loses_nothing() -> None:
     assert all(len(r) == 2 for r in results)
 
 
-@pytest.fixture(autouse=True)
-def _fresh_singleton() -> Iterator[None]:
-    reset_session_store()
-    yield
-    reset_session_store()
+def test_app_state_store_is_per_app_and_uses_the_limit() -> None:
+    def make() -> FastAPI:
+        return create_app(
+            Settings(history_max_messages=7),
+            chat_model=object(),  # type: ignore[arg-type]
+            embeddings=DeterministicFakeEmbedding(size=8),
+            vector_store=InMemoryVectorStore(DeterministicFakeEmbedding(size=8)),
+        )
 
-
-def test_singleton_store() -> None:
-    assert get_session_store() is get_session_store()
-
-
-def test_app_state_uses_the_process_singleton() -> None:
-    app = create_app(
-        Settings(history_max_messages=7),
-        chat_model=object(),  # type: ignore[arg-type]
-        embeddings=DeterministicFakeEmbedding(size=8),
-        vector_store=InMemoryVectorStore(DeterministicFakeEmbedding(size=8)),
-    )
-    with TestClient(app):
-        assert app.state.session_store is get_session_store()
-        assert app.state.session_store.max_messages == 7
+    first, second = make(), make()
+    with TestClient(first), TestClient(second):
+        assert isinstance(first.state.session_store, InMemorySessionStore)
+        assert first.state.session_store.max_messages == 7
+        assert first.state.session_store is not second.state.session_store
 
 
 def test_history_max_messages_validation() -> None:

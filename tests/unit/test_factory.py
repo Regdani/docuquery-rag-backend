@@ -15,6 +15,7 @@ from app.providers.factory import (
     create_chat_model,
     create_embeddings,
     create_vector_store,
+    index_collection_name,
 )
 from app.providers.resilience import unwrap
 from tests.fakes import DeterministicFakeEmbedding, FakeListChatModel, InMemoryVectorStore
@@ -58,7 +59,7 @@ def test_no_default_no_inheritance_and_normalization() -> None:
 def test_service_error_pattern() -> None:
     err = ProviderConfigError("boom")
     assert isinstance(err, ServiceError)
-    assert (err.message, err.code, err.status_code) == ("boom", "provider_config_error", 500)
+    assert (err.message, err.code, err.status_code) == ("boom", "PROVIDER_CONFIG_ERROR", 500)
 
 
 def test_provider_defaults() -> None:
@@ -88,7 +89,8 @@ def test_timeouts_and_retries_applied() -> None:
         )
     )
     assert g.timeout == 7.0  # type: ignore[attr-defined]
-    assert g.max_retries == 3  # type: ignore[attr-defined]
+    # The SDK makes a single attempt; the resilience wrapper owns the retries (no multiplying).
+    assert g.max_retries == 1  # type: ignore[attr-defined]
     ge = unwrap(create_embeddings(both("gemini", embedding_timeout_seconds=6.0, **GEMINI)))
     assert ge.client_args == {"timeout": 6.0}  # type: ignore[attr-defined]
     assert ge.client._api_client._httpx_client.timeout.read == 6.0  # type: ignore[attr-defined]
@@ -185,6 +187,21 @@ def test_vector_store_is_chroma_without_network(tmp_path: Path) -> None:
     assert (tmp_path / "index").exists()
     store.add_texts(["a drill manual"])
     assert store.similarity_search("drill", k=1)[0].page_content == "a drill manual"
+
+
+def test_vector_store_uses_cosine_and_replaces_an_l2_collection(tmp_path: Path) -> None:
+    import chromadb
+
+    s = both("ollama", index_dir=str(tmp_path / "index"))
+    name = index_collection_name(s)
+    old = chromadb.PersistentClient(path=s.index_dir).get_or_create_collection(name)
+    old.add(ids=["stale"], documents=["old"], embeddings=[[0.1] * 8])
+    store = create_vector_store(s, DeterministicFakeEmbedding(size=8))
+    assert store._collection.configuration["hnsw"]["space"] == "cosine"  # type: ignore[attr-defined]
+    assert store.get_by_ids(["stale"]) == []  # rebuilt empty; indexing fills it again
+    store.add_texts(["a drill manual"])
+    ((_, score),) = store.similarity_search_with_relevance_scores("a drill manual", k=1)
+    assert score == pytest.approx(1.0, abs=1e-3)
 
 
 def test_fakes_available() -> None:

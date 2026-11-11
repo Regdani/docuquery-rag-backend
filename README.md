@@ -42,7 +42,7 @@ Real manufacturer manuals are copyrighted, so `data/sample/` holds short, fictio
 - **Technical data:** What are the maximum speed and the power of the DR-450 impact drill? (2000 rpm, 600 W)
 - **Safety:** Can I use the CS-350 chainsaw in the rain, and what protective equipment do I need?
 
-Questions the manuals cannot answer, which get a "no relevant information" reply:
+Questions the manuals cannot answer; the reply says that the manuals do not contain this information:
 
 - How much does the KV-200 coffee maker cost? (price is not in the manuals)
 - Is the WM-800 washing machine in stock? (stock is not in the manuals)
@@ -124,13 +124,9 @@ Compose reads every setting from `.env` and stops with an error if the file is m
 
 ```bash
 docker compose up --build -d
-docker compose exec ollama ollama pull llama3.2:3b
-docker compose exec ollama ollama pull nomic-embed-text
-docker compose run --rm app python -m app.ingest
-docker compose restart app
 ```
 
-Pull both models before the ingest step: without them indexing fails, and `/health/ready` and `/api/v1/ask` return `503`. The models are kept in the `ollama` volume, so the pulls are needed only once. Plan for about 8 GB of RAM and several GB of free disk.
+This one command starts Ollama, pulls the models named in `.env` (a one-time download of about 2.3 GB, kept in the `ollama` volume) and then starts the API, which builds the index in the background. On the first start the command returns only after the download; `docker compose logs -f ollama-pull app` shows the progress. Plan for about 8 GB of RAM and several GB of free disk.
 
 ### 2d. Docker, cloud mode (Gemini)
 
@@ -138,14 +134,13 @@ Set the Gemini values from "2b" in `.env`, then start only the cloud service (Ol
 
 ```bash
 docker compose --profile cloud up --build -d app-cloud
-docker compose run --rm app-cloud python -m app.ingest
 ```
 
-Both app services publish port 8000, so run only one of them at a time. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
+The API builds the index in the background at startup. Both app services publish port 8000, so run only one of them at a time. Stop everything with `docker compose --profile cloud down` (add `-v` to delete the index and model volumes).
 
 ### 2e. Mixed mode (one provider for chat, the other for embeddings)
 
-Chat and embeddings are configured separately, so they can come from different providers, in either direction. Set the matching lines in `.env` and start as in "2a" (or "2c" in Docker, because the `app` service starts Ollama). Only the model of the local side has to be pulled.
+Chat and embeddings are configured separately, so they can come from different providers, in either direction. Set the matching lines in `.env` and start as in "2a" (or "2c" in Docker, because the `app` service starts Ollama). Only the model of the local side has to be pulled; in Docker this happens automatically.
 
 ```env
 # Gemini chat, local Ollama embeddings
@@ -267,10 +262,9 @@ Every question runs through a LangGraph graph compiled once at startup; its stat
 ```mermaid
 flowchart TD
     __start__([start]) --> load_history
-    load_history --> condense
-    condense --> assess
-    assess -- clear --> retrieve
-    assess -- unclear --> clarify
+    load_history --> analyze
+    analyze -- clear --> retrieve
+    analyze -- unclear --> clarify
     retrieve -- relevant hit --> generate
     retrieve -- no hit --> no_answer
     generate --> format
@@ -281,23 +275,22 @@ flowchart TD
 ```
 
 - `load_history`: loads the stored messages for the `session_key` (empty for a new conversation).
-- `condense`: with history, one LLM call rewrites a follow-up into a standalone question. Without history this step is skipped and the question is passed on unchanged; the later steps still call the LLM as usual.
-- `assess`: one LLM call decides whether the question is clear enough to search. If the answer cannot be parsed, the question is treated as clear so retrieval still runs.
+- `analyze`: one LLM call decides whether the question is clear enough to search. With history, the same call also rewrites the follow-up into a standalone question, so a follow-up costs no extra call. If the decision cannot be parsed, the question is treated as clear so retrieval still runs; if the rewrite is missing, the original question is used.
 - `clarify`: the LLM asks one targeted clarifying question; retrieval and generation are skipped.
 - `retrieve`: fetches the top `RETRIEVAL_TOP_K` chunks (1 to 20) with relevance scores (0 to 1). If at least one score reaches `RETRIEVAL_RELEVANCE_THRESHOLD` the flow continues with `generate`, otherwise with `no_answer`.
 - `generate`: answers from the chunks at or above the threshold only, and says so when the context does not contain the answer.
 - `no_answer`: a fixed "no relevant information" reply, no sources, no LLM call.
-- `format`: sets `status: answered` and the sources of the chunks used, and logs them.
+- `format`: sets `status: answered` and the sources of the chunks used; `QAService` logs each source with the `request_id`.
 - `save_history`: appends the question and the reply (answer or clarifying question) to the session.
 
-Provider errors (timeout, unavailable, rate limited) leave the graph as domain errors and nothing is saved to the history; unexpected errors become a generic `RAG_PIPELINE_ERROR` (502) without internal details.
+Provider errors (timeout, unavailable, rate limited) leave the graph as domain errors and nothing is saved to the history; unexpected errors become a generic `RAG_PIPELINE_ERROR` (502) without internal details. The whole flow also has one deadline, `REQUEST_TIMEOUT_SECONDS` (default 120), so the timeouts and retries of several model calls cannot add up beyond it.
 
 ### Indexing
 
 At startup a background task loads the manuals from `DATA_DIR` (default `data/sample/`), splits and embeds them and writes the chunks to Chroma in `INDEX_DIR` (`./data/index`). A missing or empty data directory sets the state to `failed`; the app still starts. The ingest command runs the same pipeline, prints a summary and exits with 0 on success and 1 on failure. Settings: `DATA_DIR`, `INDEX_DIR`, `CHROMA_COLLECTION`, `CHUNK_SIZE`, `CHUNK_OVERLAP`.
 
 - **Chunking:** a section starts at a level-2 heading (`## Maintenance`) and runs until the next one; text before the first `##` is the introduction, and `###` sub-headings stay inside their section. Each section is then split on its own with a recursive character splitter. Every chunk carries the source file, the product ID and name (parsed from the `# <ID> – <name>` title), the section title and a stable chunk ID; these are the fields the answer reports as its sources. Files without the title heading are logged and skipped.
-- **Index reuse:** the collection name is `CHROMA_COLLECTION` plus the embedding model name (for example `manuals-ollama-nomic-embed-text`). A fingerprint (SHA-256 over the file names and contents, the embedding model and the chunk settings) is stored next to the index. If it is unchanged and all chunks are present, the index is reused without any embedding call; otherwise it is rebuilt without duplicates.
+- **Index reuse:** the collection name is `CHROMA_COLLECTION` plus the embedding model name (for example `manuals-ollama-nomic-embed-text`). A fingerprint (SHA-256 over the file names and contents, the embedding model and the chunk settings) is stored next to the index. If it is unchanged and all chunks are present, the index is reused without any embedding call; otherwise it is rebuilt without duplicates. The collection uses cosine distance, so the relevance score is the cosine similarity of the question and the chunk; an index created with another distance is rebuilt automatically.
 
 ### Design trade-offs
 
@@ -305,12 +298,12 @@ Each item gives the choice, the alternative and the reason. Defaults are those o
 
 - **Embedded Chroma instead of a vector-store server.** A server store (Chroma server mode, pgvector, Qdrant) could be shared between instances, but it adds a service to run and operate. For seven manuals and a single process the embedded store keeps the setup to one command. The cost: instances cannot share one index.
 - **Section-based chunking with `CHUNK_SIZE=800` and `CHUNK_OVERLAP=100`.** A fixed-size splitter over the whole text is simpler but cuts across sections and mixes products. Section-based chunks stay inside one part of one manual, which gives a clean source for every answer. 800 characters fit a typical section in one or two chunks and stay small enough for a precise match; the overlap keeps a sentence on a boundary readable in both chunks. Each chunk text also starts with a `<ID> <name> - <section>` line, so similar products (KV-200 and KV-300) stay distinguishable for the embeddings, at the cost of a few tokens per chunk.
-- **`RETRIEVAL_TOP_K=4` and `RETRIEVAL_RELEVANCE_THRESHOLD=0.3`.** Four chunks are enough for a question about one topic and keep the prompt short. Below the threshold no chunk is used and the model is not called; always passing the top chunks would make the model more likely to answer questions the manuals do not cover. The threshold is a reasoned default for the default embeddings, not a tuned value.
+- **`RETRIEVAL_TOP_K=4` and `RETRIEVAL_RELEVANCE_THRESHOLD=0.5`.** Four chunks are enough for a question about one topic and keep the prompt short. The score is the cosine similarity, which behaves the same for every embedding model, whether or not it returns normalized vectors. Below the threshold no chunk is used and the model is not called; always passing the top chunks would make the model more likely to answer questions the manuals do not cover. The threshold is a reasoned default for the default embeddings, not a tuned value.
 - **Startup indexing in the background instead of an upload API or a separate ingest job.** The server starts at once and reports the indexing state on `/health/ready`. An upload API would need authentication and storage, and a separate job would need orchestration. The cost: every instance indexes on its own, and the first start is slow because every chunk is embedded.
 - **A fingerprint with a full rebuild instead of incremental updates.** Incremental updates per file would save embedding calls but need change tracking per document and chunk. For seven manuals a full rebuild is cheap and cannot leave stale or duplicate chunks; the cost is that one changed file re-embeds every manual.
 - **One collection per embedding model.** Vectors from different models are not comparable, so switching the embeddings builds a new collection instead of mixing vectors or searching with the wrong model. The cost: the old collection stays in `INDEX_DIR` until it is deleted by hand.
 - **In-memory history instead of a store.** It needs no infrastructure and keeps the interface simple, but it is lost on restart and not shared between instances.
-- **An LLM clarifying question instead of always answering.** A vague question such as "My machine doesn't work." gets one targeted question back instead of a guess that may cite the wrong product. The cost: one extra LLM call per question, and a small local model sometimes asks when the question was clear enough.
+- **An LLM clarifying question instead of always answering.** A vague question such as "My machine doesn't work." gets one targeted question back instead of a guess that may cite the wrong product. The cost: one extra LLM call per question (for a follow-up the same call also rewrites the question), and a small local model sometimes asks when the question was clear enough.
 - **Limiting model calls per process instead of unbounded parallelism.** It protects the provider quota and, locally, the machine; an overloaded instance fails fast with `503 SERVER_BUSY` instead of hiding overload as latency.
 
 ## API
@@ -390,7 +383,7 @@ Every error uses the body `{"detail", "code", "request_id"}`; `detail` never con
 | 503 | `INDEX_NOT_READY` | Indexing is running or failed |
 | 503 | `LLM_RATE_LIMITED` | Provider still rate limits after the bounded retries |
 | 503 | `SERVER_BUSY` | No model slot became free within `CONCURRENCY_WAIT_SECONDS` |
-| 504 | `LLM_TIMEOUT` | Provider did not answer within the timeout |
+| 504 | `LLM_TIMEOUT` | Provider did not answer within the timeout, or the whole question took longer than `REQUEST_TIMEOUT_SECONDS` |
 | 500 | `INTERNAL_ERROR` | Any other unhandled exception |
 
 `LLM_RATE_LIMITED` and `SERVER_BUSY` carry a `Retry-After` header in seconds: the provider's value when it sends a number, otherwise `RATE_LIMIT_RETRY_AFTER_SECONDS` (default 5); for `SERVER_BUSY`, `CONCURRENCY_WAIT_SECONDS` rounded up.
@@ -401,7 +394,7 @@ Both are at the root, outside `/api/v1`, and are not affected by the index check
 
 - **`GET /health`** (liveness) returns `200` with `{"status": "ok"}` whenever the process is serving. It touches neither the index nor any provider.
 - **`GET /health/ready`** (readiness) reports `state` (`indexing`, `ready` or `failed`), `document_count`, `chunk_count`, `embedding_model`, `last_indexed_at` and `error`. It returns `200` when the state is `ready` with at least one chunk, otherwise `503` with the same body.
-- **`GET /health/ready?check_llm=true`** also sends one minimal request to the chat model and adds `"llm": {"status": "ok" | "unreachable" | "timeout"}`, bounded by `HEALTH_LLM_TIMEOUT_SECONDS`. It is off by default because it costs latency and tokens, and it never changes the status code.
+- **`GET /health/ready?check_llm=true`** also sends one minimal request to the chat model and adds `"llm": {"status": "ok" | "unreachable" | "timeout" | "busy"}`, bounded by `HEALTH_LLM_TIMEOUT_SECONDS`. The request counts against the model-call limit like a question; `busy` means no slot became free. It is off by default because it costs latency and tokens, and it never changes the status code.
 
 ```bash
 curl -s http://localhost:8000/health
@@ -427,13 +420,13 @@ Three variables choose the models, and all three are required:
 | `EMBEDDING_PROVIDER` | `gemini`, `ollama` | Provider of the embeddings, independent of `LLM_PROVIDER` |
 | `EMBEDDING_MODEL` | model name | `gemini-embedding-001` (Gemini) or `nomic-embed-text` (Ollama) |
 
-There are no defaults and no fallbacks: a missing or unknown value stops the application and the ingest command at startup with an error that names the variable. Chat model names are provider-specific (`GEMINI_CHAT_MODEL`, `OLLAMA_CHAT_MODEL`). Every call has a timeout (`LLM_TIMEOUT_SECONDS`, `EMBEDDING_TIMEOUT_SECONDS`), and provider failures are translated into the same domain errors for both providers (`LLM_TIMEOUT`, `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`); messages never contain keys or vendor messages.
+There are no defaults and no fallbacks: a missing or unknown value stops the application and the ingest command at startup with an error that names the variable. Chat model names are provider-specific (`GEMINI_CHAT_MODEL`, `OLLAMA_CHAT_MODEL`). Every call has a timeout (`LLM_TIMEOUT_SECONDS`, `EMBEDDING_TIMEOUT_SECONDS`), every question has a deadline (`REQUEST_TIMEOUT_SECONDS`), and provider failures are translated into the same domain errors for both providers (`LLM_TIMEOUT`, `LLM_UNAVAILABLE`, `LLM_RATE_LIMITED`); messages never contain keys or vendor messages.
 
 ### Primary model (Gemini)
 
 Gemini is the primary model: a managed API with stronger answers than a small local model, no hardware to run, and one key for both chat and embeddings. The free tier is enough to try the project; the paid tier lifts the rate limits for real traffic. `gemini-3.1-flash-lite` (the default chat model) is small, fast and cheap, which is enough for answering from a few retrieved chunks; `gemini-embedding-001` is Google's general-purpose embedding model.
 
-An HTTP 429 is retried at most `MAX_RETRIES` times with exponential backoff from `RETRY_BACKOFF_SECONDS`, on top of the vendor client's own retries; the free tier may hit this during a first indexing run. If the embedding model is not available for your key, list your models with `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>` and set `EMBEDDING_MODEL` accordingly.
+An HTTP 429 is retried at most `MAX_RETRIES` times with exponential backoff from `RETRY_BACKOFF_SECONDS`. The Gemini client itself makes a single attempt, so retries do not multiply. The free tier may hit the rate limit during a first indexing run. If the embedding model is not available for your key, list your models with `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>` and set `EMBEDDING_MODEL` accordingly.
 
 ### Local alternative (Ollama)
 
@@ -452,6 +445,7 @@ The `Dockerfile` builds a `python:3.12-slim` image with the locked dependencies 
 
 - `app`: the API for local mode, started together with Ollama.
 - `ollama`: the Ollama server, with the models in the named volume `ollama`.
+- `ollama-pull`: a one-shot job that waits for Ollama and pulls the models named in `.env` (only for the parts that use Ollama); `app` starts after it has finished.
 - `app-cloud`: the same image without Ollama, in the `cloud` profile, for Gemini.
 
 Both app services read their settings from the required `.env`; compose fixes only `INDEX_DIR` and, for `app`, `OLLAMA_BASE_URL`, because they depend on the container layout. The index lives in the named volume `index`, so it survives restarts and is shared by the app and the ingest command. The container health check calls `GET /health`. For an NVIDIA GPU, add a `deploy.resources.reservations.devices` entry to the `ollama` service (requires the NVIDIA Container Toolkit; not configured here).
@@ -474,13 +468,13 @@ Every statement is labelled **implemented** (in the code of this repository) or 
 ### Parallel execution
 
 - **Implemented:** the routes, `QAService` and every graph node are `async`; chat calls use `ainvoke`. The vector search (sync query embedding plus Chroma lookup) and the startup indexing run in a worker thread with `asyncio.to_thread`, so a slow search does not stall other requests.
-- **Implemented:** the limit is an `asyncio.Semaphore` shared by all requests (`app/rag/limiter.py`). A slot is taken around each chat call and the retrieval step, not around the whole request; a request makes two to four such calls, so under load it may wait more than once.
+- **Implemented:** the limit is an `asyncio.Semaphore` shared by all requests (`app/rag/limiter.py`). A slot is taken around each chat call and the retrieval step, not around the whole request; a request makes two or three such calls, so under load it may wait more than once.
 - **Implemented:** the 429 retry runs while the slot is held, which keeps the calls against the provider bounded by the slot count; the cost is that a long backoff reduces the free slots. A call that gets no slot within the wait limit fails with `503 SERVER_BUSY` after about that limit.
 - **Next step:** several workers or instances; queue requests instead of rejecting them; stream answers.
 
 ### Resource limits
 
-- **Implemented:** timeouts on every external call, a bounded slot wait, bounded retries (only HTTP 429, only Gemini), and limits on the question length (`MAX_QUESTION_LENGTH`), the retrieved chunks (`RETRIEVAL_TOP_K`) and the history per session (`HISTORY_MAX_MESSAGES`).
+- **Implemented:** timeouts on every external call, a deadline for the whole question (`REQUEST_TIMEOUT_SECONDS`), a bounded slot wait, bounded retries (only HTTP 429, only Gemini), and limits on the question length (`MAX_QUESTION_LENGTH`), the retrieved chunks (`RETRIEVAL_TOP_K`) and the history per session (`HISTORY_MAX_MESSAGES`).
 - **Implemented:** the limit is per process. A local model on a CPU serves roughly one generation at a time, so with Ollama a small value (1 to 2) gives lower latency per request.
 - **Not bounded:** the number of sessions in memory, the worker thread pool used by `asyncio.to_thread`, and the number of requests waiting for a slot.
 - **Next step:** rate limiting per client, a bound and an expiry for sessions, a limit on waiting requests.
@@ -551,7 +545,6 @@ uv run mypy app                       # type check
 - **No answer-quality measurement:** the relevance threshold and chunk sizes are reasoned defaults, not tuned values.
 - **The local 3B model is weak** (see "Local alternative (Ollama)").
 - **Single process, embedded index:** instances do not share the index, the history or the model-call limit.
-- **Verification:** the local Ollama path was run end to end (as a local process and in Docker). The Gemini path was not, because it needs an API key; it is covered by unit tests with fakes and by key-gated integration tests.
 
 **Next steps**
 
