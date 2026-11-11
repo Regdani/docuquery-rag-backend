@@ -282,6 +282,21 @@ async def test_product_filter_is_given_to_the_clarity_check() -> None:
     assert vs.queries == ["How loud is it?"]
 
 
+async def test_content_block_replies_are_read_as_text() -> None:
+    def blocks(text: str) -> list[dict[str, Any]]:
+        return [{"type": "text", "text": text, "extras": {"signature": "sig-123"}}]
+
+    def respond(messages: list[BaseMessage]) -> Any:
+        if "check questions" in str(messages[0].content):
+            return blocks('{"clear": true}')
+        return blocks("It is 24 dB.")
+
+    graph, *_ = make(ScriptedChatModel(responder=respond, prompts=[]))
+    out = await graph.ainvoke({"question": QUESTION})
+    assert out["status"] == "answered"
+    assert out["answer"] == "It is 24 dB."
+
+
 def test_readme_diagram_matches_graph() -> None:
     graph, *_ = make()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

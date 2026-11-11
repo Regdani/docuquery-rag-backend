@@ -54,14 +54,8 @@ NODE_NAMES = (
 _JSON_OBJECT = (re.compile(r"\{.*\}", re.DOTALL), re.compile(r"\{.*?\}", re.DOTALL))
 
 
-def _text(content: Any) -> str:
-    return content if isinstance(content, str) else str(content)
-
-
 def _transcript(messages: list[BaseMessage]) -> str:
-    lines = [
-        f"{'User' if m.type == 'human' else 'Assistant'}: {_text(m.content)}" for m in messages
-    ]
+    lines = [f"{'User' if m.type == 'human' else 'Assistant'}: {m.text}" for m in messages]
     return "\n".join(lines)
 
 
@@ -157,7 +151,9 @@ def build_graph(
         messages = [SystemMessage(content=system), HumanMessage(content=user)]
         async with limit.slot():
             reply = await chat_model.ainvoke(messages)
-        return _text(reply.content)
+        # `.text` joins the text blocks: some models (Gemini 3) return a list of content blocks
+        # with metadata such as signatures instead of a plain string.
+        return reply.text
 
     async def _load(state: GraphState) -> dict[str, Any]:
         return await load_history(store, state)
